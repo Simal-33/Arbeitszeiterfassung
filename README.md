@@ -16,9 +16,8 @@ Welche Art aktiv ist, merkt die Seite beim Start selbst.
 
 ## Am Handy installieren
 
-Die App wird über GitHub Pages bereitgestellt (Workflow `pages.yml`, einmalig unter
-*Settings → Pages → Source: GitHub Actions* einschalten). Danach im Handy-Browser die Adresse
-`https://<konto>.github.io/<repo>/` öffnen:
+Die App liegt unter <https://simal-33.github.io/Arbeitszeiterfassung/> – diese Adresse
+im Handy-Browser öffnen:
 
 - **iPhone (Safari):** Teilen-Symbol → *Zum Home-Bildschirm*
 - **Android (Chrome):** Menü ⋮ → *App installieren*
@@ -26,6 +25,12 @@ Die App wird über GitHub Pages bereitgestellt (Workflow `pages.yml`, einmalig u
 Danach startet sie wie eine normale App, auch ohne Internet. Die erfassten Zeiten liegen
 ausschließlich auf dem Gerät und werden nie hochgeladen – veröffentlicht wird nur der
 Programmcode.
+
+Veröffentlicht wird über die Pages-Einstellung *Deploy from a branch* (`main`, Ordner `/`).
+Die `index.html` in der Wurzel leitet auf `static/` weiter, wo die App liegt; `.nojekyll`
+sorgt dafür, dass die Dateien unverändert ausgeliefert werden. Es ist kein eigener
+Workflow nötig – nach jedem Push auf `main` ist die neue Fassung in etwa einer Minute
+online.
 
 Weil Browserdaten verloren gehen können (iOS räumt Speicher selten genutzter Web-Apps auf,
 und „Browserdaten löschen" trifft auch diese App), erinnert die App alle zwei Wochen an eine
