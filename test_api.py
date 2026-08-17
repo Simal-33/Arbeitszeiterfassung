@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8765"
+BASE = "http://127.0.0.1:8794"
 ok, fail = 0, 0
 
 
@@ -114,8 +114,9 @@ check("Projekte sortiert", [p["projekt"] for p in a["projekte"]],
 check("Projekt Kunde A", a["projekte"][0]["minuten"], 495)
 
 print("\nGesamtsaldo (inkl. Startsaldo 2,5 h)")
-# Zeitraum 01.08.-08.08.: Werktage Mo-Fr = 3.,4.,5.,6.,7. -> 5*480 = 2400
-erwartet = (495 + 450 + 180 + 480 + 240) - 2400 + 150
+# Rechnet ab Startdatum bis heute, damit nicht erfasste Werktage nicht unter den
+# Tisch fallen. _werktage stammt aus der Auswertung oben (gleicher Zeitraum).
+erwartet = (495 + 450 + 180 + 480 + 240) - _werktage * 480 + 150
 check("Gesamtsaldo", a["gesamtsaldo"], erwartet)
 
 print("\nBearbeiten und Loeschen")
@@ -233,6 +234,147 @@ check("negative Gutschrift -> 400", s, 400)
 s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "arbeit",
                                        "von": "08:00", "bis": "12:00", "gutschrift": 500})
 check("Gutschrift bei Arbeit ignoriert", r["gutschrift"], None)
+
+print("\nSchutz vor fremden Webseiten")
+
+
+def roh(method, path, body="", ctype="application/json", origin=None, host=None):
+    """Anfrage mit frei waehlbaren Kopfzeilen, wie sie ein Browser senden wuerde."""
+    kopf = {"Content-Type": ctype}
+    if origin:
+        kopf["Origin"] = origin
+    req = urllib.request.Request(BASE + path, data=body.encode(), method=method, headers=kopf)
+    if host:
+        req.add_header("Host", host)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+_eintrag = json.dumps({"datum": "2026-08-20", "typ": "arbeit", "von": "08:00", "bis": "12:00"})
+check("Formular-POST einer fremden Seite -> 403 (Origin)",
+      roh("POST", "/api/eintraege", _eintrag, ctype="text/plain;charset=UTF-8",
+          origin="https://boese-seite.example"), 403)
+check("JSON-POST mit fremdem Origin -> 403",
+      roh("POST", "/api/eintraege", _eintrag, origin="https://boese-seite.example"), 403)
+check("Import einer fremden Seite -> 403",
+      roh("POST", "/api/import", '{"modus":"ersetzen","daten":{"eintraege":[]}}',
+          ctype="text/plain", origin="https://boese-seite.example"), 403)
+# Zweite Verteidigungslinie: auch ohne Origin-Kopfzeile kommt ein Formular-POST
+# nicht durch, weil Browser fuer application/json einen Preflight brauchen.
+check("Formular-POST ohne Origin -> 415",
+      roh("POST", "/api/eintraege", _eintrag, ctype="text/plain;charset=UTF-8"), 415)
+check("Import ohne Origin, falscher Content-Type -> 415",
+      roh("POST", "/api/import", '{"modus":"ersetzen","daten":{"eintraege":[]}}',
+          ctype="application/x-www-form-urlencoded"), 415)
+check("fremder Host-Header (DNS-Rebinding) -> 421",
+      roh("GET", "/api/export.json", host="boese-seite.example"), 421)
+check("eigener Origin bleibt erlaubt",
+      roh("POST", "/api/eintraege", _eintrag, origin=BASE), 201)
+s, e = call("GET", "/api/eintraege?von=2026-08-20&bis=2026-08-20")
+check("dabei genau ein Eintrag entstanden", len(e), 1)
+for _x in e:
+    call("DELETE", "/api/eintraege/%d" % _x["id"])
+
+print("\nImport zerstoert keine Daten")
+s, _vorher = call("GET", "/api/eintraege")
+s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": {
+    "eintraege": [{"datum": "2026-08-03", "typ": "arbeit", "von": "08:00", "bis": "16:00"}],
+    "einstellungen": {"sondertage": "quatsch"}}})
+check("kaputte Einstellungen -> 400", s, 400)
+s, _nachher = call("GET", "/api/eintraege")
+check("Eintraege trotzdem unveraendert", len(_nachher), len(_vorher))
+s, r = call("POST", "/api/import", {"modus": "anhängen", "daten": {"eintraege": []}})
+check("unbekannter Modus -> 400", s, 400)
+s, _nachher = call("GET", "/api/eintraege")
+check("nichts geloescht", len(_nachher), len(_vorher))
+s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": {
+    "eintraege": [{"datum": "2026-08-03", "typ": "arbeit", "von": "25:00", "bis": "16:00"}]}})
+check("kaputter Eintrag -> 400", s, 400)
+s, _nachher = call("GET", "/api/eintraege")
+check("auch dann nichts geloescht", len(_nachher), len(_vorher))
+
+print("\nWeitere Randfaelle")
+s, r = call("POST", "/api/eintraege", {"datum": "2026-08-21", "typ": "arbeit",
+                                       "von": "08:00", "bis": "08:00"})
+check("Von gleich Bis -> 400", s, 400)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-08-21", "typ": "urlaub",
+                                       "von": "08:00", "bis": "12:00", "pause": 600})
+check("negative Gutschrift ueber Pause -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"soll": "quatsch"})
+check("Sollstunden als Text -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"standardzeiten": {"1": {"von": "08:00", "bis": "08:00"}}})
+check("Standardzeit ohne Dauer -> 400", s, 400)
+s, r = call("GET", "/api/einstellungen")
+check("Einstellungen nach Fehlversuchen intakt", r["soll"]["1"], 8.0)
+# Christi Himmelfahrt faellt 2008 auf den Staatsfeiertag
+check("doppelter Feiertagstermin 2008",
+      len({f["datum"] for f in _app.feiertage_at(2008)}), 12)
+
+print("\nDienste / Notdienstwochen")
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "Notdienstwoche", "pauschale": 120, "farbe": "#b45309"},
+    {"name": "Wochenenddienst Süd", "pauschale": 240},
+    {"name": "Notdienstwoche", "pauschale": 60},          # gleicher Name -> eigene Kennung
+    {"name": "", "pauschale": 999},                        # ohne Namen -> faellt weg
+]})
+check("Dienstarten gespeichert", s, 200)
+check("Anzahl Dienstarten", len(r["dienstarten"]), 3)
+check("Kennungen eindeutig", [a["id"] for a in r["dienstarten"]],
+      ["notdienstwoche", "wochenenddienst-sued", "notdienstwoche-2"])
+check("Umlaute in der Kennung", r["dienstarten"][1]["id"], "wochenenddienst-sued")
+check("Farbe ergaenzt", r["dienstarten"][1]["farbe"], "#b45309")
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [{"name": "X", "pauschale": 5000}]})
+check("zu grosse Pauschale -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": "quatsch"})
+check("Dienstarten als Text -> 400", s, 400)
+s, r = call("GET", "/api/einstellungen")
+check("Dienstarten nach Fehlversuch intakt", len(r["dienstarten"]), 3)
+
+s, r = call("POST", "/api/dienste", {"dienstart": "notdienstwoche",
+                                     "von": "2026-09-07", "bis": "2026-09-13"})
+check("Notdienstwoche angelegt", r["angelegt"], 7)
+check("Pauschale gesamt", r["minuten"], 7 * 120)
+s, r2 = call("POST", "/api/dienste", {"dienstart": "notdienstwoche",
+                                      "von": "2026-09-07", "bis": "2026-09-13"})
+check("zweiter Lauf legt nichts doppelt an", r2["angelegt"], 0)
+s, r = call("POST", "/api/dienste", {"dienstart": "gibtsnicht",
+                                     "von": "2026-09-07", "bis": "2026-09-13"})
+check("unbekannte Dienstart -> 400", s, 400)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-08", "typ": "dienst"})
+check("Dienst ohne Dienstart -> 400", s, 400)
+
+# Einsatz waehrend der Rufbereitschaft zaehlt zusaetzlich
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-08", "typ": "arbeit",
+                                       "von": "23:00", "bis": "01:30", "pause": 0,
+                                       "notiz": "Einsatz"})
+check("Einsatz angelegt", s, 201)
+s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
+_t = {t["datum"]: t for t in a["tage"]}
+check("Diensttag Pauschale", _t["2026-09-07"]["gutschrift"], 120)
+check("Diensttag Saldo (Soll 8 h)", _t["2026-09-07"]["saldo"], 120 - 480)
+check("Einsatz zaehlt zusaetzlich", _t["2026-09-08"]["ist"], 150)
+check("Einsatztag gesamt", _t["2026-09-08"]["saldo"], 150 + 120 - 480)
+check("Sonntag im Dienst", _t["2026-09-13"]["saldo"], 120)
+check("Dienstauswertung Tage", a["dienste"][0]["tage"], 7)
+check("Dienstauswertung Minuten", a["dienste"][0]["minuten"], 840)
+check("Dienstauswertung Name", a["dienste"][0]["name"], "Notdienstwoche")
+
+# Auffuellen darf Diensttage weiterhin mit Arbeitszeit versehen
+s, r = call("POST", "/api/auffuellen", {"von": "2026-09-07", "bis": "2026-09-11"})
+check("Arbeitstage trotz Dienst gefuellt", r["angelegt"], 0 if r["bis"] < "2026-09-07" else 5)
+s, csv_text = call("GET", "/api/export.csv?von=2026-09-07&bis=2026-09-07")
+check("CSV kennt die Dienstspalte", "Dienst" in csv_text.splitlines()[0], True)
+check("CSV nennt den Dienstnamen", "Notdienstwoche" in csv_text, True)
+s, exp = call("GET", "/api/export.json")
+check("Export enthaelt dienstart",
+      any(e.get("dienstart") == "notdienstwoche" for e in exp["eintraege"]), True)
+s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": exp})
+check("Reimport mit Diensten", s, 200)
+s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
+check("Dienste nach Reimport unveraendert", a["dienste"][0]["minuten"], 840)
 
 print("\nStatische Dateien")
 s, html = call("GET", "/")

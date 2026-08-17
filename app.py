@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-ENTRY_TYPES = ("arbeit", "urlaub", "krank", "feiertag", "gleitzeit")
+ENTRY_TYPES = ("arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst")
 # Typen, die den Soll-Wert des Tages automatisch gutschreiben:
 CREDIT_TYPES = ("urlaub", "krank", "feiertag", "gleitzeit")
 
@@ -43,6 +43,13 @@ DEFAULT_SETTINGS = {
     },
     # Behandlung von 24.12. und 31.12.: "keine", "halb" oder "ganz"
     "sondertage": "keine",
+    # Frei definierbare Dienste (Rufbereitschaft, Notdienstwoche, ...).
+    # pauschale = Gutschrift in Minuten je Diensttag; Einsaetze werden zusaetzlich
+    # als normale Arbeitszeit erfasst.
+    "dienstarten": [
+        {"id": "notdienstwoche", "name": "Notdienstwoche", "pauschale": 120,
+         "farbe": "#b45309"},
+    ],
     # Startsaldo in Stunden (Uebertrag aus dem alten System)
     "startsaldo": 0.0,
     # Ab diesem Datum wird Soll gerechnet (leer = ab erstem Eintrag)
@@ -64,7 +71,8 @@ TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 class Store:
     def __init__(self, path):
         self.path = path
-        self.lock = threading.Lock()
+        # RLock, damit save_settings lesen und schreiben in einer Sperre erledigen kann
+        self.lock = threading.RLock()
         self._init_db()
 
     def _connect(self):
@@ -85,7 +93,8 @@ class Store:
                     pause   INTEGER NOT NULL DEFAULT 0,
                     projekt TEXT NOT NULL DEFAULT '',
                     notiz   TEXT NOT NULL DEFAULT '',
-                    gutschrift INTEGER
+                    gutschrift INTEGER,
+                    dienstart TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -94,6 +103,8 @@ class Store:
             spalten = [r["name"] for r in con.execute("PRAGMA table_info(entries)")]
             if "gutschrift" not in spalten:
                 con.execute("ALTER TABLE entries ADD COLUMN gutschrift INTEGER")
+            if "dienstart" not in spalten:
+                con.execute("ALTER TABLE entries ADD COLUMN dienstart TEXT NOT NULL DEFAULT ''")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
@@ -119,21 +130,36 @@ class Store:
         data["standardzeiten"] = {str(d): std[str(d)] for d in range(1, 8)}
         if data.get("sondertage") not in SONDERTAGE_MODI:
             data["sondertage"] = "keine"
+        if not isinstance(data.get("dienstarten"), list):
+            data["dienstarten"] = []
         return data
 
     def save_settings(self, patch):
+        with self.lock:  # Lesen und Schreiben in einem Zug, sonst gehen parallele
+            return self._save_settings(patch)  # Aenderungen aus zwei Tabs verloren
+
+    def _save_settings(self, patch):
+        if not isinstance(patch, dict):
+            raise ValueError("Einstellungen muessen als Objekt uebergeben werden.")
         current = self.get_settings()
         if "soll" in patch:
+            if patch["soll"] is not None and not isinstance(patch["soll"], dict):
+                raise ValueError("Sollstunden muessen als Objekt uebergeben werden.")
             soll = {}
             for d in range(1, 8):
                 raw = (patch["soll"] or {}).get(str(d), current["soll"][str(d)])
-                soll[str(d)] = max(0.0, min(24.0, float(raw)))
+                try:
+                    soll[str(d)] = max(0.0, min(24.0, float(raw)))
+                except (TypeError, ValueError):
+                    raise ValueError("Sollstunden fuer %s sind keine Zahl." % WOCHENTAGE[d - 1])
             current["soll"] = soll
         if "standardzeiten" in patch:
+            if patch["standardzeiten"] is not None and not isinstance(patch["standardzeiten"], dict):
+                raise ValueError("Standardzeiten muessen als Objekt uebergeben werden.")
             std = {}
             for d in range(1, 8):
                 roh = (patch["standardzeiten"] or {}).get(str(d))
-                if not roh or not (roh.get("von") and roh.get("bis")):
+                if not isinstance(roh, dict) or not (roh.get("von") and roh.get("bis")):
                     std[str(d)] = None
                     continue
                 pause = int(float(roh.get("pause") or 0))
@@ -144,13 +170,47 @@ class Store:
                         "Standardzeit fuer %s ergibt keine Arbeitszeit." % WOCHENTAGE[d - 1])
                 std[str(d)] = {"von": roh["von"], "bis": roh["bis"], "pause": pause}
             current["standardzeiten"] = std
+        if "dienstarten" in patch:
+            roh_liste = patch["dienstarten"] or []
+            if not isinstance(roh_liste, list):
+                raise ValueError("Dienstarten muessen als Liste uebergeben werden.")
+            arten, vergeben = [], set()
+            for roh in roh_liste:
+                if not isinstance(roh, dict):
+                    raise ValueError("Jede Dienstart muss ein Objekt sein.")
+                name = str(roh.get("name") or "").strip()[:40]
+                if not name:
+                    continue
+                kennung = slugify(roh.get("id") or name)
+                grund = kennung
+                nummer = 2
+                while kennung in vergeben:
+                    kennung = "%s-%d" % (grund, nummer)
+                    nummer += 1
+                vergeben.add(kennung)
+                try:
+                    pauschale = int(round(float(roh.get("pauschale") or 0)))
+                except (TypeError, ValueError):
+                    raise ValueError("Pauschale von '%s' ist keine Zahl." % name)
+                if not 0 <= pauschale <= 24 * 60:
+                    raise ValueError(
+                        "Pauschale von '%s' muss zwischen 0 und 1440 Minuten liegen." % name)
+                farbe = str(roh.get("farbe") or "").strip()
+                if not re.match(r"^#[0-9a-fA-F]{6}$", farbe):
+                    farbe = "#b45309"
+                arten.append({"id": kennung, "name": name, "pauschale": pauschale,
+                              "farbe": farbe})
+            current["dienstarten"] = arten
         if "sondertage" in patch:
             modus = (patch["sondertage"] or "keine").strip().lower()
             if modus not in SONDERTAGE_MODI:
                 raise ValueError("Sondertage muss 'keine', 'halb' oder 'ganz' sein.")
             current["sondertage"] = modus
         if "startsaldo" in patch:
-            current["startsaldo"] = float(patch["startsaldo"] or 0)
+            try:
+                current["startsaldo"] = float(patch["startsaldo"] or 0)
+            except (TypeError, ValueError):
+                raise ValueError("Startsaldo muss eine Zahl sein.")
         if "startdatum" in patch:
             sd = (patch["startdatum"] or "").strip()
             if sd and not DATE_RE.match(sd):
@@ -193,10 +253,10 @@ class Store:
     def insert_entry(self, e):
         with self.lock, self._connect() as con:
             cur = con.execute(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, "
+                "gutschrift, dienstart) VALUES(?,?,?,?,?,?,?,?,?)",
                 (e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
-                 e["notiz"], e.get("gutschrift")),
+                 e["notiz"], e.get("gutschrift"), e.get("dienstart") or ""),
             )
             return cur.lastrowid
 
@@ -204,9 +264,9 @@ class Store:
         with self.lock, self._connect() as con:
             cur = con.execute(
                 "UPDATE entries SET datum=?, typ=?, von=?, bis=?, pause=?, projekt=?, notiz=?, "
-                "gutschrift=? WHERE id=?",
+                "gutschrift=?, dienstart=? WHERE id=?",
                 (e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
-                 e["notiz"], e.get("gutschrift"), entry_id),
+                 e["notiz"], e.get("gutschrift"), e.get("dienstart") or "", entry_id),
             )
             return cur.rowcount > 0
 
@@ -219,19 +279,19 @@ class Store:
         with self.lock, self._connect() as con:
             con.execute("DELETE FROM entries")
             con.executemany(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, "
+                "gutschrift, dienstart) VALUES(?,?,?,?,?,?,?,?,?)",
                 [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
-                  e["notiz"], e.get("gutschrift")) for e in entries],
+                  e["notiz"], e.get("gutschrift"), e.get("dienstart") or "") for e in entries],
             )
 
     def add_many(self, entries):
         with self.lock, self._connect() as con:
             con.executemany(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, "
+                "gutschrift, dienstart) VALUES(?,?,?,?,?,?,?,?,?)",
                 [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
-                  e["notiz"], e.get("gutschrift")) for e in entries],
+                  e["notiz"], e.get("gutschrift"), e.get("dienstart") or "") for e in entries],
             )
 
     def first_entry_date(self):
@@ -249,6 +309,15 @@ class Store:
 # Validierung und Berechnung
 # --------------------------------------------------------------------------
 
+def slugify(text):
+    """Macht aus 'Notdienstwoche Süd' die Kennung 'notdienstwoche-sued'."""
+    text = str(text).strip().lower()
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+        text = text.replace(a, b)
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return (text or "dienst")[:40]
+
+
 def parse_time(value):
     """'8:30' -> Minuten seit Mitternacht."""
     if not TIME_RE.match(value):
@@ -264,8 +333,11 @@ def fmt_time(minutes):
     return "%02d:%02d" % (minutes // 60, minutes % 60)
 
 
-def clean_entry(raw):
-    """Prueft und normalisiert einen Eintrag aus dem Frontend."""
+def clean_entry(raw, dienstarten=None):
+    """Prueft und normalisiert einen Eintrag aus dem Frontend.
+
+    dienstarten: dict kennung -> Dienstart, noetig fuer Eintraege vom Typ 'dienst'.
+    """
     datum = (raw.get("datum") or "").strip()
     if not DATE_RE.match(datum):
         raise ValueError("Bitte ein gueltiges Datum angeben (JJJJ-MM-TT).")
@@ -301,6 +373,23 @@ def clean_entry(raw):
         if gutschrift > 24 * 60:
             raise ValueError("Die Gutschrift kann hoechstens 24 Stunden betragen.")
 
+    dienstart = str(raw.get("dienstart") or "").strip()
+    if typ == "dienst":
+        if dienstarten is None:
+            dienstart = slugify(dienstart) if dienstart else ""
+        else:
+            if not dienstart:
+                raise ValueError("Bitte eine Dienstart waehlen.")
+            if dienstart not in dienstarten:
+                raise ValueError(
+                    "Unbekannte Dienstart '%s'. Erst in den Einstellungen anlegen." % dienstart)
+            if gutschrift is None:
+                gutschrift = int(dienstarten[dienstart].get("pauschale") or 0)
+        if gutschrift is None:
+            gutschrift = 0
+    else:
+        dienstart = ""
+
     if typ == "arbeit":
         if not von or not bis:
             raise ValueError("Bei Arbeitszeit sind 'Von' und 'Bis' noetig.")
@@ -310,7 +399,8 @@ def clean_entry(raw):
         gutschrift = None  # Arbeitszeit ergibt sich aus Von/Bis
     else:
         if von and bis:
-            duration_minutes(von, bis, pause)  # nur validieren
+            if duration_minutes(von, bis, pause) < 0:
+                raise ValueError("Die Pause ist laenger als die erfasste Zeitspanne.")
         else:
             von, bis, pause = "", "", 0
 
@@ -323,6 +413,7 @@ def clean_entry(raw):
         "projekt": (raw.get("projekt") or "").strip()[:80],
         "notiz": (raw.get("notiz") or "").strip()[:500],
         "gutschrift": gutschrift,
+        "dienstart": dienstart,
     }
 
 
@@ -330,7 +421,9 @@ def duration_minutes(von, bis, pause):
     """Netto-Minuten. Ein 'Bis' vor dem 'Von' gilt als Nachtschicht ueber Mitternacht."""
     start = parse_time(von)
     end = parse_time(bis)
-    if end <= start:
+    if end == start:
+        raise ValueError("'Von' und 'Bis' duerfen nicht gleich sein.")
+    if end < start:
         end += 24 * 60
     return end - start - int(pause or 0)
 
@@ -362,6 +455,10 @@ def compute(entries, settings, von, bis):
         if e["typ"] == "arbeit":
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
             tag["ist"] += minuten
+        elif e["typ"] == "dienst":
+            # Dienste bringen ihre Pauschale, niemals das Tagessoll
+            minuten = int(e.get("gutschrift") or 0)
+            tag["gutschrift"] += minuten
         elif e.get("gutschrift") is not None:
             # Explizite Gutschrift, z. B. halber Tag am 24.12.
             minuten = int(e["gutschrift"])
@@ -424,10 +521,21 @@ def compute(entries, settings, von, bis):
             "eintraege": t["eintraege"],
         })
 
+    namen = {a["id"]: a["name"] for a in (settings.get("dienstarten") or [])}
+    dienste = {}
+    for e in entries:
+        if e["typ"] != "dienst" or not zaehlt(e["datum"]):
+            continue
+        d = dienste.setdefault(e.get("dienstart") or "", {"tage": 0, "minuten": 0})
+        d["tage"] += 1
+        d["minuten"] += int(e.get("gutschrift") or 0)
+
     return {
         "von": von,
         "bis": bis,
         "ist": ist_gesamt,
+        "dienste": [{"id": k, "name": namen.get(k, k or "Dienst"), **v}
+                    for k, v in sorted(dienste.items(), key=lambda kv: -kv[1]["minuten"])],
         "gutschrift": gutschrift_gesamt,
         "erfasst": ist_gesamt + gutschrift_gesamt,
         "soll": soll_gesamt,
@@ -515,7 +623,13 @@ def feiertage_eintragen(store, jahr):
     """Legt fuer alle Feiertage, die auf einen Arbeitstag fallen, Eintraege an."""
     uebersicht = feiertags_uebersicht(store, jahr)
     neu, uebersprungen = [], []
+    schon_geplant = set()
     for f in uebersicht["feiertage"]:
+        if f["datum"] in schon_geplant:
+            # Selten, aber moeglich: Christi Himmelfahrt faellt auf den Staatsfeiertag
+            uebersprungen.append({"datum": f["datum"], "name": f["name"],
+                                  "grund": "faellt auf denselben Tag"})
+            continue
         if not f["arbeitstag"]:
             uebersprungen.append({"datum": f["datum"], "name": f["name"], "grund": "kein Arbeitstag"})
             continue
@@ -528,10 +642,41 @@ def feiertage_eintragen(store, jahr):
             "projekt": "", "notiz": f["name"],
             "gutschrift": f["gutschrift"] if f["anteil"] < 1.0 else None,
         })
+        schon_geplant.add(f["datum"])
     if neu:
         store.add_many(neu)
     return {"jahr": jahr, "angelegt": len(neu), "uebersprungen": len(uebersprungen),
             "tage": neu, "details": uebersprungen}
+
+
+def dienst_eintragen(store, dienstart, von, bis, gutschrift=None):
+    """Legt fuer jeden Tag im Zeitraum einen Diensteintrag an (z. B. Notdienstwoche)."""
+    settings = store.get_settings()
+    arten = {a["id"]: a for a in (settings.get("dienstarten") or [])}
+    if dienstart not in arten:
+        raise ValueError("Unbekannte Dienstart '%s'." % dienstart)
+    art = arten[dienstart]
+    d_von, d_bis = date.fromisoformat(von), date.fromisoformat(bis)
+    if (d_bis - d_von).days > 366:
+        raise ValueError("Ein Dienstzeitraum darf hoechstens ein Jahr umfassen.")
+
+    schon = {e["datum"] for e in store.list_entries(von, bis)
+             if e["typ"] == "dienst" and e.get("dienstart") == dienstart}
+    neu = []
+    d = d_von
+    while d <= d_bis:
+        if d.isoformat() not in schon:
+            neu.append(clean_entry({
+                "datum": d.isoformat(), "typ": "dienst", "dienstart": dienstart,
+                "gutschrift": art["pauschale"] if gutschrift is None else gutschrift,
+                "notiz": art["name"],
+            }, arten))
+        d += timedelta(days=1)
+    if neu:
+        store.add_many(neu)
+    return {"dienstart": dienstart, "name": art["name"], "angelegt": len(neu),
+            "uebersprungen": (d_bis - d_von).days + 1 - len(neu),
+            "minuten": sum(e["gutschrift"] or 0 for e in neu)}
 
 
 def arbeitstage_auffuellen(store, von, bis):
@@ -544,7 +689,9 @@ def arbeitstage_auffuellen(store, von, bis):
     startdatum = settings.get("startdatum") or ""
     d_start = date.fromisoformat(startdatum) if startdatum else None
 
-    belegt = {e["datum"] for e in store.list_entries(von, bis)}
+    # Reine Diensttage bleiben offen: waehrend einer Notdienstwoche wird ja
+    # trotzdem normal gearbeitet.
+    belegt = {e["datum"] for e in store.list_entries(von, bis) if e["typ"] != "dienst"}
     feiertage = set()
     for jahr in range(d_von.year, d_bis.year + 1):
         for f in feiertage_at(jahr, settings.get("sondertage", "keine")):
@@ -596,9 +743,10 @@ def gesamtsaldo(store):
     if not entries:
         return int(round(float(settings.get("startsaldo") or 0) * 60))
     von = min(settings["startdatum"], entries[0]["datum"])
-    # Nur bis zum letzten erfassten Tag rechnen, damit kuenftige Tage keinen
-    # Minus-Saldo erzeugen.
-    bis = max(e["datum"] for e in entries)
+    # Bis heute rechnen, auch wenn seit Tagen nichts erfasst wurde - sonst wuerden
+    # nicht erfasste Werktage aus dem Soll fallen. Kuenftige Tage ohne Eintrag
+    # laesst compute() ohnehin aus.
+    bis = max(max(e["datum"] for e in entries), date.today().isoformat())
     res = compute(entries, settings, von, bis)
     return res["saldo"] + int(round(float(settings.get("startsaldo") or 0) * 60))
 
@@ -615,7 +763,7 @@ def export_json(store):
         "einstellungen": store.get_settings(),
         "eintraege": [
             {k: e[k] for k in ("datum", "typ", "von", "bis", "pause", "projekt",
-                               "notiz", "gutschrift")}
+                               "notiz", "gutschrift", "dienstart")}
             for e in store.list_entries()
         ],
     }
@@ -626,22 +774,29 @@ def export_csv(store, von=None, bis=None):
     entries = store.list_entries(von, bis)
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
-    w.writerow(["Datum", "Wochentag", "Art", "Von", "Bis", "Pause (Min)",
+    w.writerow(["Datum", "Wochentag", "Art", "Dienst", "Von", "Bis", "Pause (Min)",
                 "Dauer (h)", "Soll (h)", "Projekt", "Notiz"])
     wtage = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
     soll_map = {int(k): float(v) for k, v in settings["soll"].items()}
+    dienstnamen = {a["id"]: a["name"] for a in (settings.get("dienstarten") or [])}
     gesehen = set()
     for e in entries:
         d = date.fromisoformat(e["datum"])
-        if e["typ"] == "arbeit" or (e["von"] and e["bis"]):
+        # Reihenfolge wie in compute(), sonst weicht der Export von der Auswertung ab
+        if e["typ"] == "arbeit":
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
+        elif e["typ"] == "dienst":
+            minuten = int(e.get("gutschrift") or 0)
         elif e.get("gutschrift") is not None:
             minuten = int(e["gutschrift"])
+        elif e["von"] and e["bis"]:
+            minuten = duration_minutes(e["von"], e["bis"], e["pause"])
         else:
             minuten = int(round(soll_map.get(d.isoweekday(), 0.0) * 60))
         soll = soll_map.get(d.isoweekday(), 0.0)
         w.writerow([
             e["datum"], wtage[d.isoweekday() - 1], e["typ"].capitalize(),
+            dienstnamen.get(e.get("dienstart") or "", ""),
             e["von"], e["bis"], e["pause"],
             ("%.2f" % (minuten / 60)).replace(".", ","),
             ("%.2f" % soll).replace(".", ",") if e["datum"] not in gesehen else "",
@@ -652,16 +807,42 @@ def export_csv(store, von=None, bis=None):
 
 
 def import_data(store, payload, modus="ersetzen"):
+    if modus not in ("ersetzen", "anhaengen"):
+        raise ValueError("Modus muss 'ersetzen' oder 'anhaengen' sein.")
+    if not isinstance(payload, dict):
+        raise ValueError("Die Datei enthaelt keine gueltigen Daten.")
     roh = payload.get("eintraege")
     if not isinstance(roh, list):
         raise ValueError("Die Datei enthaelt kein Feld 'eintraege'.")
-    sauber = [clean_entry(e) for e in roh]
-    if modus == "anhaengen":
-        store.add_many(sauber)
-    else:
-        store.replace_all(sauber)
-    if isinstance(payload.get("einstellungen"), dict):
-        store.save_settings(payload["einstellungen"])
+
+    # Dienstarten aus der Datei gelten fuer die Pruefung der Eintraege
+    quelle = payload.get("einstellungen") if isinstance(payload.get("einstellungen"), dict) else {}
+    liste = quelle.get("dienstarten")
+    if not isinstance(liste, list):
+        liste = store.get_settings().get("dienstarten") or []
+    arten = {a.get("id"): a for a in liste if isinstance(a, dict) and a.get("id")}
+
+    # Erst alles pruefen, dann schreiben. Sonst waeren die alten Eintraege bereits
+    # geloescht, wenn eine kaputte Datei erst bei den Einstellungen auffaellt.
+    sauber = []
+    for nummer, e in enumerate(roh, 1):
+        if not isinstance(e, dict):
+            raise ValueError("Eintrag %d ist kein Objekt." % nummer)
+        try:
+            sauber.append(clean_entry(e, arten))
+        except ValueError as exc:
+            raise ValueError("Eintrag %d (%s): %s" % (nummer, e.get("datum", "ohne Datum"), exc))
+    einstellungen = payload.get("einstellungen")
+    if einstellungen is not None and not isinstance(einstellungen, dict):
+        raise ValueError("Das Feld 'einstellungen' ist beschaedigt.")
+
+    with store.lock:
+        if einstellungen:
+            store.save_settings(einstellungen)  # validiert, bevor Eintraege fallen
+        if modus == "anhaengen":
+            store.add_many(sauber)
+        else:
+            store.replace_all(sauber)
     return len(sauber)
 
 
@@ -675,6 +856,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # ruhige Konsole
+
+    # -- Schutz gegen fremde Webseiten -------------------------------------
+    def _erlaubte_hosts(self):
+        port = self.server.server_address[1]
+        namen = ["127.0.0.1", "localhost", "[::1]", "::1"]
+        if getattr(self.server, "extra_host", None):
+            namen.append(self.server.extra_host)
+        erlaubt = set()
+        for n in namen:
+            erlaubt.add(n)
+            erlaubt.add("%s:%d" % (n, port))
+        return erlaubt
+
+    def _pruefe_herkunft(self, schreibend):
+        """Verhindert, dass eine beliebige offene Webseite die Zeiterfassung
+        fernsteuert (CSRF) oder sie per DNS-Rebinding ausliest."""
+        host = (self.headers.get("Host") or "").strip()
+        if host and host not in self._erlaubte_hosts():
+            self._error("Ungueltiger Host-Header.", 421)
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin:
+            rest = origin.split("//", 1)[-1]
+            if rest not in self._erlaubte_hosts():
+                self._error("Anfragen von fremden Webseiten sind nicht erlaubt.", 403)
+                return False
+
+        if schreibend:
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._error("Schreibende Anfragen brauchen Content-Type: application/json.", 415)
+                return False
+        return True
 
     # -- Hilfen -----------------------------------------------------------
     def _send(self, code, body=b"", content_type="application/json; charset=utf-8", extra=None):
@@ -719,6 +934,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._path()
         try:
+            if not self._pruefe_herkunft(schreibend=False):
+                return
             if path.startswith("/api/"):
                 return self._api_get(path)
             return self._static(path)
@@ -742,6 +959,8 @@ class Handler(BaseHTTPRequestHandler):
     def _write(self, method):
         path = self._path()
         try:
+            if not self._pruefe_herkunft(schreibend=True):
+                return
             if not path.startswith("/api/"):
                 return self._error("Unbekannter Endpunkt.", 404)
             self._api_write(method, path)
@@ -790,12 +1009,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_write(self, method, path):
         m = re.match(r"^/api/eintraege/(\d+)$", path)
+        arten = {a["id"]: a for a in (self.store.get_settings().get("dienstarten") or [])}
         if method == "POST" and path == "/api/eintraege":
-            e = clean_entry(self._body())
+            e = clean_entry(self._body(), arten)
             new_id = self.store.insert_entry(e)
             return self._json(self.store.get_entry(new_id), 201)
+        if method == "POST" and path == "/api/dienste":
+            body = self._body()
+            von = (body.get("von") or "").strip()
+            bis = (body.get("bis") or von).strip()
+            if not (DATE_RE.match(von) and DATE_RE.match(bis)):
+                raise ValueError("Zeitraum bitte als JJJJ-MM-TT angeben.")
+            if bis < von:
+                raise ValueError("Das Ende des Zeitraums liegt vor dem Anfang.")
+            return self._json(dienst_eintragen(
+                self.store, (body.get("dienstart") or "").strip(), von, bis,
+                body.get("gutschrift")))
         if method == "PUT" and m:
-            e = clean_entry(self._body())
+            e = clean_entry(self._body(), arten)
             if not self.store.update_entry(int(m.group(1)), e):
                 return self._error("Eintrag nicht gefunden.", 404)
             return self._json(self.store.get_entry(int(m.group(1))))
@@ -835,9 +1066,11 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", ""):
             path = "/index.html"
         rel = os.path.normpath(path.lstrip("/"))
-        full = os.path.join(STATIC_DIR, rel)
-        if not os.path.abspath(full).startswith(os.path.abspath(STATIC_DIR)) \
-                or not os.path.isfile(full):
+        wurzel = os.path.realpath(STATIC_DIR)
+        full = os.path.realpath(os.path.join(STATIC_DIR, rel))
+        # commonpath statt startswith: sonst waere auch ein Nachbarordner wie
+        # "static_backup" erreichbar. realpath loest zusaetzlich Symlinks auf.
+        if os.path.commonpath([full, wurzel]) != wurzel or not os.path.isfile(full):
             return self._send(404, "Nicht gefunden", "text/plain; charset=utf-8")
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype == "application/javascript":
@@ -852,10 +1085,21 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--db", default=os.path.join(BASE_DIR, "zeiterfassung.db"))
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--im-netz-freigeben", action="store_true",
+                    help="Bestaetigt einen Start ausserhalb von 127.0.0.1")
     args = ap.parse_args()
+
+    lokal = args.host in ("127.0.0.1", "localhost", "::1")
+    if not lokal and not args.im_netz_freigeben:
+        raise SystemExit(
+            "Achtung: --host %s macht die Zeiterfassung ohne Passwort fuer alle im Netz\n"
+            "erreichbar - jeder koennte deine Zeiten lesen, aendern und loeschen.\n"
+            "Wenn das wirklich gewollt ist, zusaetzlich --im-netz-freigeben angeben."
+            % args.host)
 
     Handler.store = Store(args.db)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv.extra_host = None if lokal else args.host
     url = "http://%s:%d" % (args.host, args.port)
     print("Zeiterfassung laeuft auf %s" % url)
     print("Datenbank: %s" % args.db)

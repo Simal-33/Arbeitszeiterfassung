@@ -64,6 +64,24 @@ Im Bereich „Feiertage & Standardtage“ wählst du ein Jahr und trägst mit ei
 Feiertage ein, die auf einen Arbeitstag fallen. Bereits erfasste Tage bleiben unangetastet,
 mehrfaches Klicken legt also nichts doppelt an.
 
+## Dienste und Notdienstwochen
+
+Unter Einstellungen legst du beliebig viele Dienstarten an – Name, Pauschale in Minuten je
+Diensttag und eine Farbe. Beispiele: „Notdienstwoche" mit 120 Minuten, „Wochenenddienst" mit
+240 Minuten.
+
+- Im Bereich **Dienst eintragen** wählst du die Art und einen Zeitraum. „ganze Woche" springt
+  auf Montag bis Sonntag der gewählten Woche. Ein Klick legt für jeden Tag einen Eintrag mit
+  der Pauschale an; ein zweiter Klick auf denselben Zeitraum legt nichts doppelt an.
+- Einzelne Diensttage gehen genauso über das normale Formular mit der Art
+  „Dienst / Rufbereitschaft". Die Pauschale ist dort vorbelegt und pro Eintrag änderbar.
+- **Tatsächliche Einsätze werden zusätzlich als normale Arbeitszeit erfasst** – auch nachts
+  über Mitternacht. Beides zählt: Pauschale als Gutschrift, Einsatz als Ist-Zeit.
+- Diensttage blockieren das Auffüllen nicht: Während einer Notdienstwoche wird ja weiterhin
+  normal gearbeitet, „Arbeitstage auffüllen" trägt diese Zeiten also weiterhin ein.
+- Der Abschnitt **Dienste im Zeitraum** zeigt je Dienstart die Anzahl der Tage und die
+  Summe der Pauschalen – praktisch für die Abrechnung von Zulagen.
+
 ## Feste Arbeitstage
 
 Unter Einstellungen hinterlegst du je Wochentag feste Zeiten (Von, Bis, Pause). Diese werden
@@ -121,6 +139,7 @@ zeiterfassung.db    wird beim ersten Start angelegt
 | GET | `/api/feiertage?jahr=` | Feiertage des Jahres mit Status |
 | POST | `/api/feiertage` | Feiertage eines Jahres eintragen |
 | POST | `/api/auffuellen` | Offene Arbeitstage mit Standardzeiten füllen |
+| POST | `/api/dienste` | Dienstzeitraum anlegen (z. B. Notdienstwoche) |
 | GET | `/api/export.json` / `/api/export.csv` | Export |
 | POST | `/api/import` | Import |
 
@@ -133,14 +152,42 @@ python3 app.py --db test.db --no-browser   # Terminal 1
 python3 test_api.py                        # Terminal 2
 ```
 
-82 Prüfungen: Anlegen, Ändern, Löschen, Fehlerfälle, Nachtschichten, halbe Urlaubstage,
+130 Prüfungen: Anlegen, Ändern, Löschen, Fehlerfälle, Nachtschichten, halbe Urlaubstage,
 Saldoberechnung, Export und Import sowie die Feiertagstermine 2026 und 2027 gegen die
 offizielle Liste der Stadt Wien.
+
+## Download-Paket bauen (GitHub)
+
+Der Workflow `.github/workflows/release.yml` schnürt ein fertiges ZIP:
+
+- **Ohne Tag:** Im Reiter *Actions* den Workflow „Download-Paket" wählen und *Run workflow*
+  klicken. Das ZIP hängt danach unten am Lauf unter *Artifacts* (90 Tage abrufbar).
+- **Mit Tag:** `git tag v1.0.0 && git push origin v1.0.0` erzeugt zusätzlich ein Release,
+  in dem das ZIP dauerhaft unter *Releases* liegt und sich direkt verlinken lässt.
+
+In beiden Fällen laufen vorher die Tests; schlagen sie fehl, entsteht kein Paket.
+
+## Sicherheit
+
+Die App hat bewusst keine Anmeldung – dafür schützt sie sich gegen die Wege, auf denen ein
+lokaler Server sonst angreifbar ist:
+
+- Schreibende Anfragen brauchen `Content-Type: application/json`, ein fremder `Origin` wird
+  abgelehnt. Eine beliebige Webseite im selben Browser kann damit keine Einträge anlegen oder
+  löschen (CSRF).
+- Ein fremder `Host`-Header wird abgewiesen, was DNS-Rebinding verhindert.
+- Statische Dateien werden nur aus `static/` ausgeliefert, Symlinks und Nachbarordner
+  eingeschlossen geprüft.
+- Notizen und Projektnamen landen nie als Text in HTML-Attributen.
+
+Bekannte Einschränkung: Zeiten werden als reine Wanduhrzeit gerechnet. Eine Nachtschicht, die
+über die Sommerzeitumstellung läuft (zweimal im Jahr), ist deshalb um eine Stunde falsch und
+muss von Hand korrigiert werden.
 
 ## Hinweise
 
 - Der Server hört bewusst nur auf `127.0.0.1`, ist also nicht aus dem Netzwerk erreichbar.
-  Wer ihn im Heimnetz nutzen möchte, startet mit `--host 0.0.0.0` – dann gibt es allerdings
-  keine Zugriffsbeschränkung, das also nur in einem vertrauenswürdigen Netz tun.
+  Ein Start mit `--host 0.0.0.0` verlangt zusätzlich `--im-netz-freigeben`, weil dann jeder
+  im selben Netz ohne Passwort mitlesen und ändern könnte.
 - Die App erhebt keinen Anspruch auf Rechtskonformität nach ArbZG oder dem EuGH-Urteil zur
   Arbeitszeiterfassung; sie ist ein persönliches Werkzeug.

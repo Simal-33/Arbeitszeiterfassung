@@ -121,7 +121,11 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
           <option value="krank">Krank</option>
           <option value="feiertag">Feiertag</option>
           <option value="gleitzeit">Gleitzeittag</option>
+          <option value="dienst">Dienst / Rufbereitschaft</option>
         </select></div>
+      <div id="f-dienst-wrap" style="display:none">
+        <label for="f-dienstart">Dienstart</label>
+        <select id="f-dienstart" onchange="dienstWechsel()"></select></div>
       <div><label for="f-von">Von (24 h)</label>
         <input type="text" id="f-von" inputmode="numeric" autocomplete="off"
                placeholder="08:00" maxlength="5" pattern="[0-9]{1,2}:[0-9]{2}"></div>
@@ -160,6 +164,15 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
     <button class="primary" onclick="trageFeiertageEin()">Feiertage eintragen</button>
     <button class="right" onclick="fuelleAuf()">Arbeitstage auff&uuml;llen</button>
   </div>
+  <div class="toolbar" style="margin:0 0 16px;padding:12px;background:var(--soft);border-radius:8px">
+    <label for="d-art" style="margin:0">Dienst eintragen</label>
+    <select id="d-art" style="width:auto"></select>
+    <input type="date" id="d-von" style="width:auto">
+    <span class="hint">bis</span>
+    <input type="date" id="d-bis" style="width:auto">
+    <button onclick="setzeDienstWoche()">ganze Woche</button>
+    <button class="primary" onclick="trageDienstEin()">Dienst anlegen</button>
+  </div>
   <div id="feiertagsListe"></div>
   <p class="hint" style="margin-bottom:0">
     Die 13 gesetzlichen Feiertage nach dem Arbeitsruhegesetz werden im Programm berechnet,
@@ -168,6 +181,11 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
     fehlen daher bewusst. &bdquo;Arbeitstage auff&uuml;llen&ldquo; tr&auml;gt im gew&auml;hlten
     Zeitraum alle vergangenen Arbeitstage ohne Eintrag mit deinen Standardzeiten ein.
   </p>
+</div>
+
+<div class="panel" id="dienstPanel" style="display:none">
+  <h2>Dienste im Zeitraum</h2>
+  <div id="dienstListe"></div>
 </div>
 
 <div class="panel" id="projektPanel" style="display:none">
@@ -184,6 +202,14 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 
       <label style="margin-top:18px">Feste Arbeitszeiten je Wochentag (f&uuml;r Vorbelegung und Auff&uuml;llen)</label>
       <div id="standardWeek"></div>
+
+      <label style="margin-top:18px">Dienstarten (Notdienst, Rufbereitschaft, Wochenenddienst &hellip;)</label>
+      <div id="dienstarten"></div>
+      <button type="button" onclick="dienstartHinzu()" style="margin-top:8px">+ Dienstart</button>
+      <p class="hint" style="margin:6px 0 0">
+        Die Pauschale wird je Diensttag gutgeschrieben. Tats&auml;chliche Eins&auml;tze
+        tr&auml;gst du zus&auml;tzlich als normale Arbeitszeit ein &ndash; beides z&auml;hlt.
+      </p>
 
       <div class="grid form-row" style="margin-top:16px">
         <div><label for="s-sondertage">24.12. und 31.12.</label>
@@ -282,7 +308,8 @@ async function load(){
   if (!von || !bis) return;
   try {
     aktuell = await api(`/api/auswertung?von=${von}&bis=${bis}`);
-    renderKpis(aktuell); renderTabelle(aktuell); renderProjekte(aktuell);
+    renderKpis(aktuell); renderTabelle(aktuell);
+    renderDienste(aktuell); renderProjekte(aktuell);
   } catch(e){ zeige(e.message, "err"); }
 }
 
@@ -313,14 +340,15 @@ function renderTabelle(a){
       const dat = new Date(t.datum + "T00:00:00");
       html += `<tr class="${we ? "we" : ""}">
         <td>${i === 0 ? `<strong>${WT[wd-1]}</strong> ${String(dat.getDate()).padStart(2,"0")}.${String(dat.getMonth()+1).padStart(2,"0")}.` : ""}</td>
-        <td><span class="tag">${esc(e.typ.charAt(0).toUpperCase() + e.typ.slice(1))}</span></td>
-        <td class="hide">${e.von && e.bis ? esc(e.von) + "–" + esc(e.bis) : "<span class='hint'>ganzer Tag</span>"}</td>
+        <td><span class="tag">${esc(artName(e))}</span></td>
+        <td class="hide">${e.von && e.bis ? esc(e.von) + "–" + esc(e.bis)
+          : `<span class='hint'>${e.typ === "dienst" ? "Pauschale" : "ganzer Tag"}</span>`}</td>
         <td class="hide num">${e.pause ? e.pause + " min" : ""}</td>
         <td class="hide">${esc(e.projekt)}</td>
         <td class="num">${hm(e.minuten)}</td>
         <td class="num ${i === 0 ? klasse(t.saldo) : ""}">${i === 0 ? hm(t.saldo, true) : ""}</td>
         <td class="num" style="white-space:nowrap">
-          <button class="icon" title="Bearbeiten" onclick='bearbeite(${JSON.stringify(e)})'>&#9998;</button>
+          <button class="icon" title="Bearbeiten" onclick="bearbeite(${e.id})">&#9998;</button>
           <button class="icon danger" title="L&ouml;schen" onclick="loesche(${e.id})">&#10005;</button>
         </td></tr>`;
     });
@@ -331,6 +359,23 @@ function renderTabelle(a){
     <td class="num ${klasse(a.saldo)}"><strong>${hm(a.saldo, true)}</strong></td><td></td>
   </tr></tfoot></table>`;
   ziel.innerHTML = html;
+}
+
+function artName(e){
+  if (e.typ !== "dienst") return e.typ.charAt(0).toUpperCase() + e.typ.slice(1);
+  const art = (settings?.dienstarten || []).find(a => a.id === e.dienstart);
+  return art ? art.name : "Dienst";
+}
+
+function renderDienste(a){
+  const panel = document.getElementById("dienstPanel");
+  if (!a.dienste || !a.dienste.length){ panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  document.getElementById("dienstListe").innerHTML =
+    `<table><thead><tr><th>Dienst</th><th class="num">Tage</th>
+     <th class="num">Pauschale gesamt</th></tr></thead><tbody>` +
+    a.dienste.map(d => `<tr><td>${esc(d.name)}</td><td class="num">${d.tage}</td>
+      <td class="num">${hm(d.minuten)}</td></tr>`).join("") + "</tbody></table>";
 }
 
 function renderProjekte(a){
@@ -351,6 +396,99 @@ function renderProjekte(a){
     </div>`).join("");
   const namen = [...new Set(a.projekte.map(p => p.projekt).filter(p => p !== "(ohne Projekt)"))];
   document.getElementById("projekte").innerHTML = namen.map(n => `<option value="${esc(n)}">`).join("");
+}
+
+// ---------- Dienstarten ----------
+let dienstEntwurf = null;   // Arbeitskopie, solange die Einstellungen offen sind
+
+function dienstListe(){
+  if (!dienstEntwurf) dienstEntwurf = (settings?.dienstarten || []).map(a => ({...a}));
+  return dienstEntwurf;
+}
+
+function renderDienstarten(){
+  dienstEntwurf = (settings?.dienstarten || []).map(a => ({...a}));
+  zeichneDienstarten();
+}
+
+function zeichneDienstarten(){
+  const ziel = document.getElementById("dienstarten");
+  const liste = dienstListe();
+  if (!liste.length){
+    ziel.innerHTML = '<p class="hint" style="margin:6px 0">Noch keine Dienstart angelegt.</p>';
+    return;
+  }
+  ziel.innerHTML = liste.map((a, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <input type="text" value="${esc(a.name)}" style="width:180px" placeholder="Name"
+             oninput="dienstartFeld(${i},'name',this.value)">
+      <input type="number" value="${Number(a.pauschale) || 0}" min="0" max="1440" step="15"
+             style="width:96px" oninput="dienstartFeld(${i},'pauschale',this.value)">
+      <span class="hint">Min/Tag</span>
+      <input type="color" value="${esc(a.farbe || "#b45309")}" style="width:48px;padding:2px"
+             oninput="dienstartFeld(${i},'farbe',this.value)">
+      <button type="button" class="icon danger" title="Entfernen"
+              onclick="dienstartWeg(${i})">&#10005;</button>
+    </div>`).join("");
+}
+
+function dienstartFeld(i, feld, wert){ dienstListe()[i][feld] = wert; }
+function dienstartHinzu(){
+  dienstListe().push({name: "", pauschale: 120, farbe: "#b45309"});
+  zeichneDienstarten();
+}
+function dienstartWeg(i){
+  const a = dienstListe()[i];
+  if (a.name && !confirm(`Dienstart „${a.name}" entfernen? Bereits erfasste Diensttage `
+      + "bleiben erhalten, lassen sich danach aber nicht mehr zuordnen.")) return;
+  dienstListe().splice(i, 1);
+  zeichneDienstarten();
+}
+
+function fuelleDienstAuswahl(){
+  const arten = settings?.dienstarten || [];
+  const html = arten.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name)} (${hm(a.pauschale)} h/Tag)</option>`).join("");
+  for (const id of ["f-dienstart", "d-art"]){
+    const el = document.getElementById(id);
+    const alt = el.value;
+    el.innerHTML = html || '<option value="">keine Dienstart angelegt</option>';
+    if (alt) el.value = alt;
+  }
+}
+
+function dienstWechsel(){
+  const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("f-dienstart").value);
+  if (art && !document.getElementById("f-id").value){
+    document.getElementById("f-gutschrift").value = art.pauschale;
+  }
+}
+
+function setzeDienstWoche(){
+  const start = document.getElementById("d-von").value || heute();
+  const d = new Date(start + "T00:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));          // auf Montag zurueck
+  const mo = iso(new Date(d.getTime() - d.getTimezoneOffset() * 60000));
+  const so = new Date(d); so.setDate(so.getDate() + 6);
+  document.getElementById("d-von").value = mo;
+  document.getElementById("d-bis").value = iso(new Date(so.getTime() - so.getTimezoneOffset() * 60000));
+}
+
+async function trageDienstEin(){
+  const dienstart = document.getElementById("d-art").value;
+  const von = document.getElementById("d-von").value;
+  const bis = document.getElementById("d-bis").value || von;
+  if (!dienstart) return zeige("Bitte zuerst eine Dienstart in den Einstellungen anlegen.", "err");
+  if (!von) return zeige("Bitte ein Startdatum für den Dienst wählen.", "err");
+  try {
+    const res = await api("/api/dienste", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({dienstart, von, bis}),
+    });
+    zeige(`${res.name}: ${res.angelegt} Tage eingetragen (${hm(res.minuten)} h Pauschale`
+      + (res.uebersprungen ? `, ${res.uebersprungen} bereits vorhanden).` : ")."), "ok");
+    await load();
+  } catch(e){ zeige(e.message, "err"); }
 }
 
 // ---------- Feiertage und Standardtage ----------
@@ -413,10 +551,14 @@ async function fuelleAuf(){
 
 // ---------- Formular ----------
 function typWechsel(){
-  const arbeit = document.getElementById("f-typ").value === "arbeit";
+  const typ = document.getElementById("f-typ").value;
+  const arbeit = typ === "arbeit", dienst = typ === "dienst";
   document.getElementById("f-gutschrift-wrap").style.display = arbeit ? "none" : "";
-  document.getElementById("dauerHint").textContent = arbeit
-    ? "" : "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.";
+  document.getElementById("f-dienst-wrap").style.display = dienst ? "" : "none";
+  document.getElementById("dauerHint").textContent = arbeit ? ""
+    : (dienst ? "Die Pauschale wird gutgeschrieben; Einsätze zusätzlich als Arbeit erfassen."
+              : "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.");
+  if (dienst) dienstWechsel();
   berechneHint();
 }
 
@@ -490,7 +632,11 @@ function reset(){
   berechneHint();
 }
 
-function bearbeite(e){
+// Nimmt nur die ID entgegen und holt den Eintrag aus den geladenen Daten -
+// so landen Notiz und Projekt nie als Text in einem HTML-Attribut.
+function bearbeite(id){
+  const e = (aktuell?.tage || []).flatMap(t => t.eintraege).find(x => x.id === id);
+  if (!e) return;
   document.getElementById("f-id").value = e.id;
   document.getElementById("f-datum").value = e.datum;
   document.getElementById("f-typ").value = e.typ;
@@ -500,6 +646,7 @@ function bearbeite(e){
   document.getElementById("f-projekt").value = e.projekt || "";
   document.getElementById("f-notiz").value = e.notiz || "";
   document.getElementById("f-gutschrift").value = e.gutschrift ?? "";
+  if (e.dienstart) document.getElementById("f-dienstart").value = e.dienstart;
   document.getElementById("formTitel").textContent = "Eintrag bearbeiten";
   document.getElementById("submitBtn").textContent = "Änderung speichern";
   datumHinweis();
@@ -522,6 +669,8 @@ async function speichern(ev){
     notiz: document.getElementById("f-notiz").value,
     gutschrift: document.getElementById("f-typ").value === "arbeit"
       ? null : (document.getElementById("f-gutschrift").value || null),
+    dienstart: document.getElementById("f-typ").value === "dienst"
+      ? document.getElementById("f-dienstart").value : "",
   };
   try {
     await api(id ? `/api/eintraege/${id}` : "/api/eintraege", {
@@ -540,7 +689,8 @@ async function speichern(ev){
 async function loesche(id){
   if (!confirm("Diesen Eintrag löschen?")) return;
   try {
-    await api(`/api/eintraege/${id}`, {method: "DELETE"});
+    await api(`/api/eintraege/${id}`, {
+      method: "DELETE", headers: {"Content-Type": "application/json"}});
     zeige("Eintrag gelöscht.", "ok");
     if (document.getElementById("f-id").value == id) reset();
     await load();
@@ -567,6 +717,8 @@ function renderSettings(){
     </div>`;
   }).join("");
   document.getElementById("s-sondertage").value = settings.sondertage || "keine";
+  renderDienstarten();
+  fuelleDienstAuswahl();
   document.getElementById("s-startsaldo").value = settings.startsaldo;
   document.getElementById("s-startdatum").value = settings.startdatum || "";
   document.getElementById("s-name").value = settings.name || "";
@@ -592,6 +744,7 @@ async function speichereEinstellungen(){
       method: "PUT", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         soll, standardzeiten,
+        dienstarten: dienstListe().filter(a => (a.name || "").trim()),
         sondertage: document.getElementById("s-sondertage").value,
         startsaldo: Number(document.getElementById("s-startsaldo").value || 0),
         startdatum: document.getElementById("s-startdatum").value,
