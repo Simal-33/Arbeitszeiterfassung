@@ -1,0 +1,17 @@
+# Datenbank mit den eigenen Zeiten gehoert nicht ins Repository
+*.db
+*.db-journal
+
+# Exporte
+zeiterfassung-*.json
+zeiterfassung-*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editoren / OS
+.vscode/
+.idea/
+.DS_Store

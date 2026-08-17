@@ -33,6 +33,14 @@ python3 app.py --no-browser         # Browser nicht automatisch öffnen
 3. Optional ein Datum bei **Soll zählt ab** setzen – davor werden keine Sollstunden gerechnet.
 4. Oben Einträge erfassen. Fertig.
 
+## Eingabe
+
+Die Oberfläche ist durchgehend deutsch und zeigt Datum und Uhrzeit unabhängig von der
+Browsersprache im deutschen Format (`Mo, 03.08.2026`, 24-Stunden-Zeiten).
+
+Bei „Von“ und „Bis“ genügt eine Kurzform, die beim Verlassen des Feldes ergänzt wird:
+`9` → `09:00`, `830` → `08:30`, `17.45` → `17:45`.
+
 ## Wie gerechnet wird
 
 - **Dauer** = Bis − Von − Pause. Liegt „Bis“ vor „Von“, wird eine Nachtschicht über Mitternacht
