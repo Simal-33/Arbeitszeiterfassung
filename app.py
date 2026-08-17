@@ -1073,6 +1073,8 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.commonpath([full, wurzel]) != wurzel or not os.path.isfile(full):
             return self._send(404, "Nicht gefunden", "text/plain; charset=utf-8")
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        if full.endswith(".webmanifest"):
+            ctype = "application/manifest+json"
         if ctype.startswith("text/") or ctype == "application/javascript":
             ctype += "; charset=utf-8"
         with open(full, "rb") as fh:

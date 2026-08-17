@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zeiterfassung</title>
+<meta name="theme-color" content="#2f6fd0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Zeiterfassung">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
 <style>
 :root{
   --bg:#f6f7f9; --panel:#ffffff; --line:#e3e6ea; --text:#1c1f23; --muted:#6b7280;
@@ -86,6 +93,14 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 </header>
 
 <div class="msg" id="msg"></div>
+
+<div id="sicherung" style="display:none;padding:10px 12px;border-radius:8px;margin-bottom:12px;
+     background:rgba(180,83,9,.12);font-size:14px;display:none">
+  <strong>Sicherung empfohlen.</strong> <span></span>
+  Die Daten liegen nur in diesem Browser.
+  <button onclick="jetztSichern()" style="margin-left:8px">Jetzt sichern</button>
+  <button onclick="document.getElementById('sicherung').style.display='none'">Später</button>
+</div>
 
 <div class="toolbar">
   <button class="icon" onclick="shiftMonth(-1)" title="Vorheriger Monat">&#8592;</button>
@@ -241,6 +256,7 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 
 </div>
 
+<script src="lokal.js"></script>
 <script>
 const WT = ["Mo","Di","Mi","Do","Fr","Sa","So"];
 const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
@@ -273,13 +289,33 @@ function zeige(text, art){
   if (art === "ok") setTimeout(() => { m.className = "msg"; }, 3000);
 }
 
+// Zwei Betriebsarten: gegen den Python-Server oder ganz ohne Server im Browser.
+let LOKAL_MODUS = false;
+
 async function api(pfad, opts){
+  if (LOKAL_MODUS) return LOKAL.ruf(pfad, opts);
   const res = await fetch(pfad, opts);
   const txt = await res.text();
   let data = null;
-  try { data = txt ? JSON.parse(txt) : null; } catch(e){ data = null; }
+  try { data = txt ? JSON.parse(txt) : null; } catch(e){ data = txt; }
   if (!res.ok) throw new Error((data && data.fehler) || ("Fehler " + res.status));
   return data;
+}
+
+async function modusErmitteln(){
+  try {
+    const res = await fetch("/api/einstellungen", {cache: "no-store"});
+    if (res.ok){ LOKAL_MODUS = false; return; }
+  } catch(e){ /* kein Server erreichbar */ }
+  LOKAL_MODUS = true;
+}
+
+// Download ohne Server: Datei im Browser erzeugen
+function dateiSpeichern(name, inhalt, typ){
+  const url = URL.createObjectURL(new Blob([inhalt], {type: typ}));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------- Zeitraum ----------
@@ -756,10 +792,19 @@ async function speichereEinstellungen(){
 }
 
 // ---------- Export / Import ----------
-function exportJson(){ window.location = "/api/export.json"; }
-function exportCsv(){
+async function exportJson(){
+  const name = `zeiterfassung-${heute()}.json`;
+  if (!LOKAL_MODUS) return void (window.location = "/api/export.json");
+  dateiSpeichern(name, JSON.stringify(await api("/api/export.json"), null, 2),
+                 "application/json");
+  zeige("Sicherung gespeichert. Leg sie an einen sicheren Ort.", "ok");
+}
+
+async function exportCsv(){
   const von = document.getElementById("von").value, bis = document.getElementById("bis").value;
-  window.location = `/api/export.csv?von=${von}&bis=${bis}`;
+  if (!LOKAL_MODUS) return void (window.location = `/api/export.csv?von=${von}&bis=${bis}`);
+  dateiSpeichern(`zeiterfassung-${von}-bis-${bis}.csv`,
+                 await api(`/api/export.csv?von=${von}&bis=${bis}`), "text/csv;charset=utf-8");
 }
 async function importJson(input){
   const datei = input.files[0]; if (!datei) return;
@@ -781,17 +826,44 @@ async function importJson(input){
 
 // ---------- Start ----------
 (async function init(){
+  await modusErmitteln();
   document.getElementById("monat").value = heute().slice(0,7);
   document.getElementById("jahr").value = heute().slice(0,4);
-  setzeMonat();
   try {
     settings = await api("/api/einstellungen");
     renderSettings();
     await ladeFeiertage();
   } catch(e){ zeige(e.message, "err"); }
+  setzeMonat();
   reset();
   typWechsel();
+  if (LOKAL_MODUS){
+    document.getElementById("who").textContent =
+      (settings?.name ? settings.name + " · " : "") + "Daten nur auf diesem Gerät";
+    sicherungsHinweis();
+  }
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")){
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
 })();
+
+// Im Browser gespeicherte Daten koennen verloren gehen - regelmaessig erinnern.
+function sicherungsHinweis(){
+  const letzte = Number(localStorage.getItem("letzteSicherung") || 0);
+  const tage = (Date.now() - letzte) / 86400000;
+  if (letzte && tage < 14) return;
+  const box = document.getElementById("sicherung");
+  box.style.display = "block";
+  box.querySelector("span").textContent = letzte
+    ? `Letzte Sicherung vor ${Math.floor(tage)} Tagen.`
+    : "Noch keine Sicherung angelegt.";
+}
+
+async function jetztSichern(){
+  await exportJson();
+  localStorage.setItem("letzteSicherung", String(Date.now()));
+  document.getElementById("sicherung").style.display = "none";
+}
 </script>
 </body>
 </html>

@@ -7,6 +7,31 @@ Alles läuft auf deinem eigenen Rechner. Keine Cloud, keine Anmeldung, keine ext
 nur Python 3 (ab 3.8), das auf macOS und Linux vorinstalliert ist und unter Windows von
 python.org kommt.
 
+Dieselbe Oberfläche läuft in zwei Betriebsarten:
+
+- **Am Rechner** mit dem Python-Server, Daten in einer SQLite-Datei.
+- **Am Handy** als installierbare Web-App ganz ohne Server, Daten im Browser des Geräts.
+
+Welche Art aktiv ist, merkt die Seite beim Start selbst.
+
+## Am Handy installieren
+
+Die App wird über GitHub Pages bereitgestellt (Workflow `pages.yml`, einmalig unter
+*Settings → Pages → Source: GitHub Actions* einschalten). Danach im Handy-Browser die Adresse
+`https://<konto>.github.io/<repo>/` öffnen:
+
+- **iPhone (Safari):** Teilen-Symbol → *Zum Home-Bildschirm*
+- **Android (Chrome):** Menü ⋮ → *App installieren*
+
+Danach startet sie wie eine normale App, auch ohne Internet. Die erfassten Zeiten liegen
+ausschließlich auf dem Gerät und werden nie hochgeladen – veröffentlicht wird nur der
+Programmcode.
+
+Weil Browserdaten verloren gehen können (iOS räumt Speicher selten genutzter Web-Apps auf,
+und „Browserdaten löschen" trifft auch diese App), erinnert die App alle zwei Wochen an eine
+Sicherung. Ein Tipp auf **Jetzt sichern** legt eine JSON-Datei ab, die sich über **Import**
+auf jedem Gerät wieder einlesen lässt – so wandern die Daten auch zwischen Handy und Rechner.
+
 ## Starten
 
 ```bash
@@ -119,11 +144,18 @@ Für ein Backup reicht es, `zeiterfassung.db` oder die JSON-Sicherung zu kopiere
 ## Aufbau
 
 ```
-app.py              Server, API und Berechnungslogik (nur Standardbibliothek)
-static/index.html   komplette Oberfläche (HTML, CSS, JS in einer Datei)
-test_api.py         End-to-End-Test gegen den laufenden Server
-zeiterfassung.db    wird beim ersten Start angelegt
+app.py                     Server, API und Berechnungslogik (nur Standardbibliothek)
+static/index.html          Oberfläche, läuft mit und ohne Server
+static/lokal.js            dieselbe Rechenlogik in JavaScript, für den Betrieb ohne Server
+static/sw.js               Service Worker, macht die Handy-App offlinefähig
+static/manifest.webmanifest Angaben zur Installation am Handy
+test_api.py                End-to-End-Test gegen den laufenden Server
+zeiterfassung.db           wird beim ersten Start angelegt
 ```
+
+Die Rechenregeln stehen zweimal da – einmal in Python, einmal in JavaScript. Damit sie nicht
+auseinanderlaufen, vergleicht `test_lokal.py` beide Implementierungen: dieselben Szenarien
+werden durch beide geschickt und die Ergebnisse müssen auf die Minute übereinstimmen.
 
 ### API
 
@@ -166,6 +198,20 @@ Der Workflow `.github/workflows/release.yml` schnürt ein fertiges ZIP:
   in dem das ZIP dauerhaft unter *Releases* liegt und sich direkt verlinken lässt.
 
 In beiden Fällen laufen vorher die Tests; schlagen sie fehl, entsteht kein Paket.
+
+### Wer das Paket herunterladen darf
+
+- **Privates Repository:** Artefakte und Release-Dateien sind nur mit Login und Zugriff auf das
+  Repository abrufbar. Das ist der einfachste Schutz und braucht keine weitere Einstellung.
+- **Öffentliches Repository:** Release-Dateien und Artefakte kann jeder laden. Einen
+  Passwortschutz bietet GitHub dafür nicht – der Workflow kann aber ein verschlüsseltes Paket
+  bauen: unter *Settings → Secrets and variables → Actions* ein Secret namens `PAKET_PASSWORT`
+  anlegen. Dann entsteht statt des offenen ZIP ein mit AES-256 verschlüsseltes `.7z`, bei dem
+  auch die Dateinamen verschlüsselt sind. Der Workflow prüft selbst nach, dass sich das Archiv
+  mit einem falschen Passwort nicht öffnen lässt.
+
+Zum Öffnen des geschützten Pakets: 7-Zip (Windows), Keka oder The Unarchiver (macOS),
+`7z x datei.7z` (Linux).
 
 ## Sicherheit
 
