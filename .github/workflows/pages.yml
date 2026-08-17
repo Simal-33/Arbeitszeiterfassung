@@ -1,156 +1,44 @@
-name: build
+name: Pages
+
+# Veroeffentlicht den Ordner static/ als Website unter
+# https://simal-33.github.io/Arbeitszeiterfassung/
+#
+# "enablement: true" schaltet GitHub Pages beim ersten Lauf selbst ein –
+# es muss nichts von Hand unter Settings -> Pages eingestellt werden.
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+# Nie zwei Veroeffentlichungen gleichzeitig
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # v6 laeuft auf Node 24 – v4 loest die Deprecation-Warnung aus
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
+      - uses: actions/configure-pages@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          enablement: true
 
-      - name: Syntax pruefen
-        run: python -m compileall -q app.py test_api.py
-
-      - name: Server starten
-        run: |
-          python app.py --port 8765 --db ci.db --no-browser &
-          for i in $(seq 1 40); do
-            curl -sf http://127.0.0.1:8765/api/einstellungen >/dev/null && exit 0
-            sleep 0.5
-          done
-          echo "Server ist nicht gestartet"; exit 1
-
-      - name: API-Tests
-        run: python test_api.py
-
-name: Download-Paket
-
-# Erzeugt ein fertiges ZIP der App zum Herunterladen.
-#
-# Zwei Wege:
-#   1. Actions-Tab -> "Download-Paket" -> "Run workflow": das Paket haengt danach
-#      unten am Lauf als Artefakt (bleibt 90 Tage verfuegbar).
-#   2. Ein Tag der Form v1.0.0 pushen: es entsteht zusaetzlich ein Release, das
-#      dauerhaft unter "Releases" liegt.
-#
-#      git tag v1.0.0 && git push origin v1.0.0
-#
-# Passwortschutz (optional, nur fuer oeffentliche Repos interessant):
-#   Settings -> Secrets and variables -> Actions -> New repository secret
-#   Name: PAKET_PASSWORT, Wert: dein Passwort.
-#   Dann entsteht statt des offenen ZIP ein mit AES-256 verschluesseltes .7z,
-#   bei dem auch die Dateiliste verschluesselt ist. Ohne Passwort ist nichts
-#   davon lesbar. Zum Oeffnen: 7-Zip (Windows), Keka (macOS), p7zip (Linux).
-
-on:
-  workflow_dispatch:
-  push:
-    tags: ["v*"]
-
-permissions:
-  contents: write        # noetig, um ein Release anzulegen
-
-jobs:
-  paket:
-    runs-on: ubuntu-latest
-    env:
-      # Ueber env pruefbar; direkt in "if" ist der secrets-Kontext nicht zuverlaessig
-      PAKET_PASSWORT: ${{ secrets.PAKET_PASSWORT }}
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
+      - name: Ordner static/ als Website-Paket packen
+        uses: actions/upload-pages-artifact@v3
         with:
-          python-version: "3.13"
+          path: static
 
-      - name: Version bestimmen
-        id: version
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=$(date +%Y-%m-%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Tests vor dem Paketieren
-        run: |
-          python app.py --port 8765 --db ci.db --no-browser &
-          for i in $(seq 1 40); do
-            curl -sf http://127.0.0.1:8765/api/einstellungen >/dev/null && break
-            sleep 0.5
-          done
-          python test_api.py
-
-      - name: Dateien sammeln
-        run: |
-          rm -f ci.db
-          mkdir -p paket/zeiterfassung
-          cp -r app.py static README.md start.sh start.bat test_api.py paket/zeiterfassung/
-
-      - name: Offenes ZIP bauen
-        if: env.PAKET_PASSWORT == ''
-        run: |
-          cd paket
-          zip -qr "../zeiterfassung-${{ steps.version.outputs.name }}.zip" zeiterfassung
-          cd ..
-          unzip -l "zeiterfassung-${{ steps.version.outputs.name }}.zip"
-          echo "PAKET=zeiterfassung-${{ steps.version.outputs.name }}.zip" >> "$GITHUB_ENV"
-
-      - name: Verschluesseltes Paket bauen
-        if: env.PAKET_PASSWORT != ''
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
-          cd paket
-          # -mhe=on verschluesselt auch die Dateinamen
-          7z a -p"$PAKET_PASSWORT" -mhe=on \
-            "../zeiterfassung-${{ steps.version.outputs.name }}.7z" zeiterfassung > /dev/null
-          cd ..
-          # Gegenprobe: ohne Passwort darf sich nichts oeffnen lassen
-          if 7z t -p"falschespasswort" "zeiterfassung-${{ steps.version.outputs.name }}.7z" \
-               > /dev/null 2>&1; then
-            echo "Verschluesselung greift nicht - Abbruch"; exit 1
-          fi
-          7z t -p"$PAKET_PASSWORT" "zeiterfassung-${{ steps.version.outputs.name }}.7z" > /dev/null
-          echo "Verschluesseltes Paket geprueft."
-          echo "PAKET=zeiterfassung-${{ steps.version.outputs.name }}.7z" >> "$GITHUB_ENV"
-
-      - name: Als Artefakt anhaengen
-        uses: actions/upload-artifact@v7
-        with:
-          name: zeiterfassung-${{ steps.version.outputs.name }}
-          path: ${{ env.PAKET }}
-          if-no-files-found: error
-          retention-days: 90
-
-      - name: Release anlegen (nur bei einem Tag)
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -n "$PAKET_PASSWORT" ]; then
-            HINWEIS="Das Paket ist mit einem Passwort geschuetzt (7-Zip, AES-256)."
-          else
-            HINWEIS="Entpacken und \`python3 app.py\` starten. Details in der README."
-          fi
-          gh release create "${GITHUB_REF_NAME}" "${PAKET}" \
-            --title "Zeiterfassung ${GITHUB_REF_NAME}" \
-            --notes "$HINWEIS" \
-            --repo "${GITHUB_REPOSITORY}"
+      - id: deployment
+        uses: actions/deploy-pages@v4
