@@ -41,12 +41,47 @@ Browsersprache im deutschen Format (`Mo, 03.08.2026`, 24-Stunden-Zeiten).
 Bei „Von“ und „Bis“ genügt eine Kurzform, die beim Verlassen des Feldes ergänzt wird:
 `9` → `09:00`, `830` → `08:30`, `17.45` → `17:45`.
 
+## Feiertage (Österreich)
+
+Die App berechnet die 13 gesetzlichen Feiertage nach dem Arbeitsruhegesetz selbst – über die
+Osterformel, also ohne Internetverbindung und für jedes beliebige Jahr:
+
+Neujahr, Heilige Drei Könige, Ostermontag, Staatsfeiertag, Christi Himmelfahrt, Pfingstmontag,
+Fronleichnam, Mariä Himmelfahrt, Nationalfeiertag, Allerheiligen, Mariä Empfängnis,
+Christtag, Stefanitag.
+
+Bewusst **nicht** enthalten:
+
+- **Karfreitag** – seit 2019 kein allgemeiner Feiertag mehr, sondern über den persönlichen
+  Feiertag (ein einseitig wählbarer Urlaubstag) geregelt.
+- **Landespatrone** (z. B. Leopold in Wien, Florian in Oberösterreich) – keine gesetzlichen
+  Ruhetage im Sinne des Arbeitsruhegesetzes.
+- **24.12. und 31.12.** – ebenfalls keine gesetzlichen Feiertage. In den Einstellungen lässt
+  sich wählen, ob sie als normale Arbeitstage, halbe oder ganze freie Tage gelten sollen; das
+  richtet sich nach deinem Kollektivvertrag.
+
+Im Bereich „Feiertage & Standardtage“ wählst du ein Jahr und trägst mit einem Klick alle
+Feiertage ein, die auf einen Arbeitstag fallen. Bereits erfasste Tage bleiben unangetastet,
+mehrfaches Klicken legt also nichts doppelt an.
+
+## Feste Arbeitstage
+
+Unter Einstellungen hinterlegst du je Wochentag feste Zeiten (Von, Bis, Pause). Diese werden
+beim Erfassen automatisch vorgeschlagen, sobald du ein Datum wählst.
+
+Der Knopf **Arbeitstage auffüllen** trägt im angezeigten Zeitraum alle Arbeitstage nach, die
+noch keinen Eintrag haben. Übersprungen werden dabei: Tage mit vorhandenem Eintrag, Feiertage,
+Wochentage ohne Sollzeit, Wochentage ohne hinterlegte Standardzeit und alles nach heute.
+
 ## Wie gerechnet wird
 
 - **Dauer** = Bis − Von − Pause. Liegt „Bis“ vor „Von“, wird eine Nachtschicht über Mitternacht
   angenommen (22:00–06:00 = 8 h).
-- **Soll** = Summe der Sollstunden aller Tage im Zeitraum, aber nur bis einschließlich heute.
-  Der laufende Monat steht dadurch nicht künstlich im Minus.
+- **Soll** = Summe der Sollstunden aller Tage im Zeitraum. Tage in der Zukunft zählen nur mit,
+  wenn dort bereits etwas erfasst ist – vorab eingetragene Feiertage oder geplante Urlaube
+  drücken den Saldo also nicht ins Minus, und der laufende Monat auch nicht.
+- Ohne gesetztes **Startdatum** beginnt die Saldorechnung mit dem ersten Tag, an dem
+  Arbeitszeit erfasst wurde. Tage davor bleiben sichtbar, zählen aber nicht mit.
 - **Urlaub, Krank, Feiertag, Gleitzeittag** werden automatisch mit den Sollstunden des Tages
   gutgeschrieben – der Saldo bleibt an diesen Tagen neutral. Trägst du bei diesen Arten trotzdem
   eine Zeitspanne ein, zählt genau diese (praktisch für halbe Urlaubstage).
@@ -83,19 +118,24 @@ zeiterfassung.db    wird beim ersten Start angelegt
 | GET | `/api/einstellungen` | Einstellungen lesen |
 | PUT | `/api/einstellungen` | Einstellungen speichern |
 | GET | `/api/auswertung?von=&bis=` | Ist, Soll, Saldo, Tage, Projekte |
+| GET | `/api/feiertage?jahr=` | Feiertage des Jahres mit Status |
+| POST | `/api/feiertage` | Feiertage eines Jahres eintragen |
+| POST | `/api/auffuellen` | Offene Arbeitstage mit Standardzeiten füllen |
 | GET | `/api/export.json` / `/api/export.csv` | Export |
 | POST | `/api/import` | Import |
 
 ## Tests
 
-Server starten, dann in einem zweiten Terminal:
+Der Test erwartet einen Server mit **leerer** Datenbank:
 
 ```bash
-python3 test_api.py
+python3 app.py --db test.db --no-browser   # Terminal 1
+python3 test_api.py                        # Terminal 2
 ```
 
-Prüft Anlegen, Ändern, Löschen, Fehlerfälle, Nachtschichten, halbe Urlaubstage,
-Saldoberechnung, Export und Import.
+82 Prüfungen: Anlegen, Ändern, Löschen, Fehlerfälle, Nachtschichten, halbe Urlaubstage,
+Saldoberechnung, Export und Import sowie die Feiertagstermine 2026 und 2027 gegen die
+offizielle Liste der Stadt Wien.
 
 ## Hinweise
 

@@ -31,12 +31,27 @@ CREDIT_TYPES = ("urlaub", "krank", "feiertag", "gleitzeit")
 DEFAULT_SETTINGS = {
     # Sollstunden je Wochentag, 1 = Montag ... 7 = Sonntag
     "soll": {"1": 8.0, "2": 8.0, "3": 8.0, "4": 8.0, "5": 8.0, "6": 0.0, "7": 0.0},
+    # Feste Arbeitszeiten je Wochentag; None = kein Standard hinterlegt
+    "standardzeiten": {
+        "1": {"von": "08:00", "bis": "16:30", "pause": 30},
+        "2": {"von": "08:00", "bis": "16:30", "pause": 30},
+        "3": {"von": "08:00", "bis": "16:30", "pause": 30},
+        "4": {"von": "08:00", "bis": "16:30", "pause": 30},
+        "5": {"von": "08:00", "bis": "16:30", "pause": 30},
+        "6": None,
+        "7": None,
+    },
+    # Behandlung von 24.12. und 31.12.: "keine", "halb" oder "ganz"
+    "sondertage": "keine",
     # Startsaldo in Stunden (Uebertrag aus dem alten System)
     "startsaldo": 0.0,
     # Ab diesem Datum wird Soll gerechnet (leer = ab erstem Eintrag)
     "startdatum": "",
     "name": "",
 }
+
+SONDERTAGE_MODI = ("keine", "halb", "ganz")
+WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
@@ -69,11 +84,16 @@ class Store:
                     bis     TEXT,
                     pause   INTEGER NOT NULL DEFAULT 0,
                     projekt TEXT NOT NULL DEFAULT '',
-                    notiz   TEXT NOT NULL DEFAULT ''
+                    notiz   TEXT NOT NULL DEFAULT '',
+                    gutschrift INTEGER
                 )
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_entries_datum ON entries(datum)")
+            # Migration aelterer Datenbanken
+            spalten = [r["name"] for r in con.execute("PRAGMA table_info(entries)")]
+            if "gutschrift" not in spalten:
+                con.execute("ALTER TABLE entries ADD COLUMN gutschrift INTEGER")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
@@ -93,6 +113,12 @@ class Store:
         for d in range(1, 8):
             soll.setdefault(str(d), 0.0)
         data["soll"] = soll
+        std = dict(data.get("standardzeiten") or {})
+        for d in range(1, 8):
+            std.setdefault(str(d), None)
+        data["standardzeiten"] = {str(d): std[str(d)] for d in range(1, 8)}
+        if data.get("sondertage") not in SONDERTAGE_MODI:
+            data["sondertage"] = "keine"
         return data
 
     def save_settings(self, patch):
@@ -103,6 +129,26 @@ class Store:
                 raw = (patch["soll"] or {}).get(str(d), current["soll"][str(d)])
                 soll[str(d)] = max(0.0, min(24.0, float(raw)))
             current["soll"] = soll
+        if "standardzeiten" in patch:
+            std = {}
+            for d in range(1, 8):
+                roh = (patch["standardzeiten"] or {}).get(str(d))
+                if not roh or not (roh.get("von") and roh.get("bis")):
+                    std[str(d)] = None
+                    continue
+                pause = int(float(roh.get("pause") or 0))
+                if pause < 0:
+                    raise ValueError("Die Pause kann nicht negativ sein.")
+                if duration_minutes(roh["von"], roh["bis"], pause) <= 0:
+                    raise ValueError(
+                        "Standardzeit fuer %s ergibt keine Arbeitszeit." % WOCHENTAGE[d - 1])
+                std[str(d)] = {"von": roh["von"], "bis": roh["bis"], "pause": pause}
+            current["standardzeiten"] = std
+        if "sondertage" in patch:
+            modus = (patch["sondertage"] or "keine").strip().lower()
+            if modus not in SONDERTAGE_MODI:
+                raise ValueError("Sondertage muss 'keine', 'halb' oder 'ganz' sein.")
+            current["sondertage"] = modus
         if "startsaldo" in patch:
             current["startsaldo"] = float(patch["startsaldo"] or 0)
         if "startdatum" in patch:
@@ -147,19 +193,20 @@ class Store:
     def insert_entry(self, e):
         with self.lock, self._connect() as con:
             cur = con.execute(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"], e["notiz"]),
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
+                 e["notiz"], e.get("gutschrift")),
             )
             return cur.lastrowid
 
     def update_entry(self, entry_id, e):
         with self.lock, self._connect() as con:
             cur = con.execute(
-                "UPDATE entries SET datum=?, typ=?, von=?, bis=?, pause=?, projekt=?, notiz=? "
-                "WHERE id=?",
+                "UPDATE entries SET datum=?, typ=?, von=?, bis=?, pause=?, projekt=?, notiz=?, "
+                "gutschrift=? WHERE id=?",
                 (e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
-                 e["notiz"], entry_id),
+                 e["notiz"], e.get("gutschrift"), entry_id),
             )
             return cur.rowcount > 0
 
@@ -172,24 +219,29 @@ class Store:
         with self.lock, self._connect() as con:
             con.execute("DELETE FROM entries")
             con.executemany(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz) "
-                "VALUES(?,?,?,?,?,?,?)",
-                [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"], e["notiz"])
-                 for e in entries],
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
+                  e["notiz"], e.get("gutschrift")) for e in entries],
             )
 
     def add_many(self, entries):
         with self.lock, self._connect() as con:
             con.executemany(
-                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz) "
-                "VALUES(?,?,?,?,?,?,?)",
-                [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"], e["notiz"])
-                 for e in entries],
+                "INSERT INTO entries(datum, typ, von, bis, pause, projekt, notiz, gutschrift) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [(e["datum"], e["typ"], e["von"], e["bis"], e["pause"], e["projekt"],
+                  e["notiz"], e.get("gutschrift")) for e in entries],
             )
 
     def first_entry_date(self):
+        """Erster Tag mit Arbeitszeit. Vorab eingetragene Feiertage oder Urlaube
+        verschieben den Beginn der Saldorechnung damit nicht nach hinten."""
         with self.lock, self._connect() as con:
-            row = con.execute("SELECT MIN(datum) AS d FROM entries").fetchone()
+            row = con.execute(
+                "SELECT MIN(datum) AS d FROM entries WHERE typ = 'arbeit'").fetchone()
+            if not (row and row["d"]):
+                row = con.execute("SELECT MIN(datum) AS d FROM entries").fetchone()
         return row["d"] if row and row["d"] else None
 
 
@@ -236,12 +288,26 @@ def clean_entry(raw):
     if pause < 0:
         raise ValueError("Die Pause kann nicht negativ sein.")
 
+    gutschrift = raw.get("gutschrift")
+    if gutschrift in ("", None):
+        gutschrift = None
+    else:
+        try:
+            gutschrift = int(round(float(gutschrift)))
+        except (TypeError, ValueError):
+            raise ValueError("Gutschrift muss eine Zahl in Minuten sein.")
+        if gutschrift < 0:
+            raise ValueError("Die Gutschrift kann nicht negativ sein.")
+        if gutschrift > 24 * 60:
+            raise ValueError("Die Gutschrift kann hoechstens 24 Stunden betragen.")
+
     if typ == "arbeit":
         if not von or not bis:
             raise ValueError("Bei Arbeitszeit sind 'Von' und 'Bis' noetig.")
         dauer = duration_minutes(von, bis, pause)
         if dauer < 0:
             raise ValueError("Die Pause ist laenger als die erfasste Zeitspanne.")
+        gutschrift = None  # Arbeitszeit ergibt sich aus Von/Bis
     else:
         if von and bis:
             duration_minutes(von, bis, pause)  # nur validieren
@@ -256,6 +322,7 @@ def clean_entry(raw):
         "pause": pause,
         "projekt": (raw.get("projekt") or "").strip()[:80],
         "notiz": (raw.get("notiz") or "").strip()[:500],
+        "gutschrift": gutschrift,
     }
 
 
@@ -295,6 +362,10 @@ def compute(entries, settings, von, bis):
         if e["typ"] == "arbeit":
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
             tag["ist"] += minuten
+        elif e.get("gutschrift") is not None:
+            # Explizite Gutschrift, z. B. halber Tag am 24.12.
+            minuten = int(e["gutschrift"])
+            tag["gutschrift"] += minuten
         elif e["von"] and e["bis"]:
             # Nicht-Arbeitstyp mit expliziter Zeitspanne (z. B. halber Urlaubstag)
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
@@ -307,22 +378,25 @@ def compute(entries, settings, von, bis):
             tag["typen"].append(e["typ"])
         tag["eintraege"].append(dict(e, minuten=minuten))
 
-    # Soll nur bis heute (bzw. bis zum letzten erfassten Tag) zaehlen, damit der
-    # laufende Monat nicht kuenstlich im Minus steht.
-    grenze = date.today()
-    if tage:
-        grenze = max(grenze, max(date.fromisoformat(d) for d in tage))
+    # Kuenftige Tage zaehlen nur mit, wenn dort schon etwas erfasst ist (z. B. ein
+    # geplanter Urlaub oder vorab eingetragene Feiertage). Sonst stuende der laufende
+    # Monat kuenstlich im Minus.
+    heute = date.today()
 
     soll_gesamt = 0
     for d in daterange(d_von, d_bis):
         if d_start and d < d_start:
             continue
-        if d > grenze:
+        if d > heute and d.isoformat() not in tage:
             continue
         soll_gesamt += int(round(soll_map.get(d.isoweekday(), 0.0) * 60))
 
-    ist_gesamt = sum(t["ist"] for t in tage.values())
-    gutschrift_gesamt = sum(t["gutschrift"] for t in tage.values())
+    # Tage vor dem Startdatum bleiben sichtbar, zaehlen aber nicht in den Saldo.
+    def zaehlt(iso):
+        return not d_start or date.fromisoformat(iso) >= d_start
+
+    ist_gesamt = sum(t["ist"] for d, t in tage.items() if zaehlt(d))
+    gutschrift_gesamt = sum(t["gutschrift"] for d, t in tage.items() if zaehlt(d))
 
     projekte = {}
     for e in entries:
@@ -336,15 +410,16 @@ def compute(entries, settings, von, bis):
         t = tage[d]
         wd = date.fromisoformat(d).isoweekday()
         t_soll = int(round(soll_map.get(wd, 0.0) * 60))
-        if d_start and date.fromisoformat(d) < d_start:
-            t_soll = 0
+        t_saldo = t["ist"] + t["gutschrift"] - t_soll
+        if not zaehlt(d):
+            t_soll, t_saldo = 0, 0
         tagesliste.append({
             "datum": d,
             "wochentag": wd,
             "ist": t["ist"],
             "gutschrift": t["gutschrift"],
             "soll": t_soll,
-            "saldo": t["ist"] + t["gutschrift"] - t_soll,
+            "saldo": t_saldo,
             "typen": t["typen"],
             "eintraege": t["eintraege"],
         })
@@ -361,6 +436,148 @@ def compute(entries, settings, von, bis):
         "projekte": [{"projekt": k, "minuten": v} for k, v in
                      sorted(projekte.items(), key=lambda kv: -kv[1])],
     }
+
+
+# --------------------------------------------------------------------------
+# Feiertage Oesterreich
+# --------------------------------------------------------------------------
+
+def ostersonntag(jahr):
+    """Gregorianischer Osteralgorithmus (Meeus/Jones/Butcher)."""
+    a = jahr % 19
+    b, c = divmod(jahr, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    monat, tag = divmod(h + l - 7 * m + 114, 31)
+    return date(jahr, monat, tag + 1)
+
+
+def feiertage_at(jahr, sondertage="keine"):
+    """Die 13 gesetzlichen Feiertage in Oesterreich (Arbeitsruhegesetz).
+
+    Der Karfreitag ist seit 2019 kein allgemeiner Feiertag mehr, Landespatrone
+    sind keine gesetzlichen Ruhetage - beide sind daher nicht enthalten.
+    Der 24.12. und der 31.12. sind ebenfalls keine gesetzlichen Feiertage und
+    werden nur beruecksichtigt, wenn 'sondertage' auf halb oder ganz steht.
+    """
+    ostern = ostersonntag(jahr)
+    tage = [
+        (date(jahr, 1, 1), "Neujahr"),
+        (date(jahr, 1, 6), "Heilige Drei Koenige"),
+        (ostern + timedelta(days=1), "Ostermontag"),
+        (date(jahr, 5, 1), "Staatsfeiertag"),
+        (ostern + timedelta(days=39), "Christi Himmelfahrt"),
+        (ostern + timedelta(days=50), "Pfingstmontag"),
+        (ostern + timedelta(days=60), "Fronleichnam"),
+        (date(jahr, 8, 15), "Mariae Himmelfahrt"),
+        (date(jahr, 10, 26), "Nationalfeiertag"),
+        (date(jahr, 11, 1), "Allerheiligen"),
+        (date(jahr, 12, 8), "Mariae Empfaengnis"),
+        (date(jahr, 12, 25), "Christtag"),
+        (date(jahr, 12, 26), "Stefanitag"),
+    ]
+    liste = [{"datum": d.isoformat(), "name": n, "anteil": 1.0, "gesetzlich": True}
+             for d, n in tage]
+    if sondertage in ("halb", "ganz"):
+        anteil = 0.5 if sondertage == "halb" else 1.0
+        liste.append({"datum": date(jahr, 12, 24).isoformat(), "name": "Heiliger Abend",
+                      "anteil": anteil, "gesetzlich": False})
+        liste.append({"datum": date(jahr, 12, 31).isoformat(), "name": "Silvester",
+                      "anteil": anteil, "gesetzlich": False})
+    return sorted(liste, key=lambda x: x["datum"])
+
+
+def feiertags_uebersicht(store, jahr):
+    settings = store.get_settings()
+    soll_map = {int(k): float(v) for k, v in settings["soll"].items()}
+    vorhanden = {e["datum"] for e in store.list_entries("%d-01-01" % jahr, "%d-12-31" % jahr)}
+    liste = []
+    for f in feiertage_at(jahr, settings.get("sondertage", "keine")):
+        d = date.fromisoformat(f["datum"])
+        soll = int(round(soll_map.get(d.isoweekday(), 0.0) * 60))
+        liste.append(dict(
+            f,
+            wochentag=d.isoweekday(),
+            soll=soll,
+            gutschrift=int(round(soll * f["anteil"])),
+            arbeitstag=soll > 0,
+            erfasst=f["datum"] in vorhanden,
+        ))
+    return {"jahr": jahr, "sondertage": settings.get("sondertage", "keine"), "feiertage": liste}
+
+
+def feiertage_eintragen(store, jahr):
+    """Legt fuer alle Feiertage, die auf einen Arbeitstag fallen, Eintraege an."""
+    uebersicht = feiertags_uebersicht(store, jahr)
+    neu, uebersprungen = [], []
+    for f in uebersicht["feiertage"]:
+        if not f["arbeitstag"]:
+            uebersprungen.append({"datum": f["datum"], "name": f["name"], "grund": "kein Arbeitstag"})
+            continue
+        if f["erfasst"]:
+            uebersprungen.append({"datum": f["datum"], "name": f["name"],
+                                  "grund": "bereits erfasst"})
+            continue
+        neu.append({
+            "datum": f["datum"], "typ": "feiertag", "von": "", "bis": "", "pause": 0,
+            "projekt": "", "notiz": f["name"],
+            "gutschrift": f["gutschrift"] if f["anteil"] < 1.0 else None,
+        })
+    if neu:
+        store.add_many(neu)
+    return {"jahr": jahr, "angelegt": len(neu), "uebersprungen": len(uebersprungen),
+            "tage": neu, "details": uebersprungen}
+
+
+def arbeitstage_auffuellen(store, von, bis):
+    """Fuellt vergangene Arbeitstage ohne Eintrag mit den Standardzeiten."""
+    settings = store.get_settings()
+    soll_map = {int(k): float(v) for k, v in settings["soll"].items()}
+    std = settings.get("standardzeiten") or {}
+    d_von = date.fromisoformat(von)
+    d_bis = min(date.fromisoformat(bis), date.today())
+    startdatum = settings.get("startdatum") or ""
+    d_start = date.fromisoformat(startdatum) if startdatum else None
+
+    belegt = {e["datum"] for e in store.list_entries(von, bis)}
+    feiertage = set()
+    for jahr in range(d_von.year, d_bis.year + 1):
+        for f in feiertage_at(jahr, settings.get("sondertage", "keine")):
+            feiertage.add(f["datum"])
+
+    neu = []
+    uebersprungen = {"belegt": 0, "feiertag": 0, "kein_arbeitstag": 0, "ohne_standardzeit": 0}
+    d = d_von
+    while d <= d_bis:
+        iso = d.isoformat()
+        vorlage = std.get(str(d.isoweekday()))
+        if d_start and d < d_start:
+            pass
+        elif iso in belegt:
+            uebersprungen["belegt"] += 1
+        elif iso in feiertage:
+            uebersprungen["feiertag"] += 1
+        elif soll_map.get(d.isoweekday(), 0.0) <= 0:
+            uebersprungen["kein_arbeitstag"] += 1
+        elif not vorlage:
+            uebersprungen["ohne_standardzeit"] += 1
+        else:
+            neu.append({
+                "datum": iso, "typ": "arbeit", "von": vorlage["von"], "bis": vorlage["bis"],
+                "pause": int(vorlage.get("pause") or 0), "projekt": "",
+                "notiz": "automatisch aus Standardzeiten", "gutschrift": None,
+            })
+        d += timedelta(days=1)
+
+    if neu:
+        store.add_many(neu)
+    return {"angelegt": len(neu), "von": von, "bis": d_bis.isoformat(),
+            "uebersprungen": uebersprungen}
 
 
 def effective_settings(store):
@@ -397,7 +614,8 @@ def export_json(store):
         "exportiert_am": datetime.now().isoformat(timespec="seconds"),
         "einstellungen": store.get_settings(),
         "eintraege": [
-            {k: e[k] for k in ("datum", "typ", "von", "bis", "pause", "projekt", "notiz")}
+            {k: e[k] for k in ("datum", "typ", "von", "bis", "pause", "projekt",
+                               "notiz", "gutschrift")}
             for e in store.list_entries()
         ],
     }
@@ -417,6 +635,8 @@ def export_csv(store, von=None, bis=None):
         d = date.fromisoformat(e["datum"])
         if e["typ"] == "arbeit" or (e["von"] and e["bis"]):
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
+        elif e.get("gutschrift") is not None:
+            minuten = int(e["gutschrift"])
         else:
             minuten = int(round(soll_map.get(d.isoweekday(), 0.0) * 60))
         soll = soll_map.get(d.isoweekday(), 0.0)
@@ -547,6 +767,11 @@ class Handler(BaseHTTPRequestHandler):
                           von, bis)
             res["gesamtsaldo"] = gesamtsaldo(self.store)
             return self._json(res)
+        if path == "/api/feiertage":
+            jahr = q.get("jahr") or str(date.today().year)
+            if not re.match(r"^\d{4}$", str(jahr)) or not (1900 <= int(jahr) <= 2200):
+                raise ValueError("Jahr bitte vierstellig zwischen 1900 und 2200 angeben.")
+            return self._json(feiertags_uebersicht(self.store, int(jahr)))
         if path == "/api/export.json":
             name = "zeiterfassung-%s.json" % date.today().isoformat()
             return self._send(
@@ -580,6 +805,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if method == "PUT" and path == "/api/einstellungen":
             return self._json(self.store.save_settings(self._body()))
+        if method == "POST" and path == "/api/feiertage":
+            body = self._body()
+            jahr = body.get("jahr") or date.today().year
+            try:
+                jahr = int(jahr)
+            except (TypeError, ValueError):
+                raise ValueError("Jahr bitte als Zahl angeben.")
+            if not 1900 <= jahr <= 2200:
+                raise ValueError("Jahr bitte zwischen 1900 und 2200 angeben.")
+            return self._json(feiertage_eintragen(self.store, jahr))
+        if method == "POST" and path == "/api/auffuellen":
+            body = self._body()
+            von = (body.get("von") or "").strip()
+            bis = (body.get("bis") or "").strip()
+            if not (DATE_RE.match(von) and DATE_RE.match(bis)):
+                raise ValueError("Zeitraum bitte als JJJJ-MM-TT angeben.")
+            if bis < von:
+                raise ValueError("Das Ende des Zeitraums liegt vor dem Anfang.")
+            return self._json(arbeitstage_auffuellen(self.store, von, bis))
         if method == "POST" and path == "/api/import":
             body = self._body()
             modus = body.get("modus") or "ersetzen"

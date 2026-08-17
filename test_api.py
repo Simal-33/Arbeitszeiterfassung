@@ -31,6 +31,15 @@ def check(name, got, want):
         print("  FAIL %-46s got=%r want=%r" % (name, got, want))
 
 
+_status, _vorhandene = call("GET", "/api/eintraege")
+if _status != 200:
+    raise SystemExit("Server nicht erreichbar auf %s - bitte zuerst 'python3 app.py' starten." % BASE)
+if _vorhandene:
+    raise SystemExit(
+        "Der Test braucht eine leere Datenbank (gefunden: %d Eintraege).\n"
+        "Server mit einer frischen Datei starten, z. B.:\n"
+        "  python3 app.py --db test.db --no-browser" % len(_vorhandene))
+
 print("Einstellungen")
 s, r = call("PUT", "/api/einstellungen", {
     "soll": {"1": 8, "2": 8, "3": 8, "4": 8, "5": 8, "6": 0, "7": 0},
@@ -142,6 +151,88 @@ s, e = call("GET", "/api/eintraege")
 check("Nach Anhaengen verdoppelt", len(e), 8)
 s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": {"quatsch": 1}})
 check("Import ohne Eintraege -> 400", s, 400)
+
+print("\nFeiertage Oesterreich (Berechnung)")
+import app as _app
+_soll_2026 = {
+    "2026-01-01": "Neujahr", "2026-01-06": "Heilige Drei Koenige",
+    "2026-04-06": "Ostermontag", "2026-05-01": "Staatsfeiertag",
+    "2026-05-14": "Christi Himmelfahrt", "2026-05-25": "Pfingstmontag",
+    "2026-06-04": "Fronleichnam", "2026-08-15": "Mariae Himmelfahrt",
+    "2026-10-26": "Nationalfeiertag", "2026-11-01": "Allerheiligen",
+    "2026-12-08": "Mariae Empfaengnis", "2026-12-25": "Christtag",
+    "2026-12-26": "Stefanitag",
+}
+_soll_2027 = ["2027-01-01", "2027-01-06", "2027-03-29", "2027-05-01", "2027-05-06",
+              "2027-05-17", "2027-05-27", "2027-08-15", "2027-10-26", "2027-11-01",
+              "2027-12-08", "2027-12-25", "2027-12-26"]
+check("13 Feiertage 2026", len(_app.feiertage_at(2026)), 13)
+check("Termine 2026 (Stadt Wien)",
+      {f["datum"]: f["name"] for f in _app.feiertage_at(2026)}, _soll_2026)
+check("Termine 2027 (Stadt Wien)", [f["datum"] for f in _app.feiertage_at(2027)], _soll_2027)
+check("Ostersonntag 2026", _app.ostersonntag(2026).isoformat(), "2026-04-05")
+check("Ostersonntag 2027", _app.ostersonntag(2027).isoformat(), "2027-03-28")
+check("Ostersonntag 2024 (Kontrolle)", _app.ostersonntag(2024).isoformat(), "2024-03-31")
+check("Karfreitag nicht enthalten",
+      any(f["name"] == "Karfreitag" for f in _app.feiertage_at(2026)), False)
+check("24./31.12. nur mit Sondertagen",
+      [f["datum"] for f in _app.feiertage_at(2026, "ganz") if f["datum"].endswith(("12-24", "12-31"))],
+      ["2026-12-24", "2026-12-31"])
+
+print("\nFeiertage per API eintragen")
+s, r = call("PUT", "/api/einstellungen", {"sondertage": "halb"})
+check("Sondertage gesetzt", r["sondertage"], "halb")
+s, r = call("GET", "/api/feiertage?jahr=2027")
+check("Uebersicht Status", s, 200)
+check("Feiertage 2027 inkl. Sondertage", len(r["feiertage"]), 15)
+_fr = {f["datum"]: f for f in r["feiertage"]}
+check("Allerheiligen 2027 ist Montag", _fr["2027-11-01"]["wochentag"], 1)
+check("Staatsfeiertag 2027 faellt auf Samstag", _fr["2027-05-01"]["arbeitstag"], False)
+check("Heiliger Abend halbe Gutschrift", _fr["2027-12-24"]["gutschrift"], 240)
+s, r = call("POST", "/api/feiertage", {"jahr": 2027})
+check("Eintragen Status", s, 200)
+# Werktage (Mo-Fr) unter den 15 Terminen 2027
+_werktags = [f for f in _fr.values() if f["arbeitstag"]]
+check("angelegte Feiertage", r["angelegt"], len(_werktags))
+s, r2 = call("POST", "/api/feiertage", {"jahr": 2027})
+check("zweiter Lauf legt nichts doppelt an", r2["angelegt"], 0)
+s, a = call("GET", "/api/auswertung?von=2027-12-01&bis=2027-12-31")
+_tage = {t["datum"]: t for t in a["tage"]}
+check("Mariae Empfaengnis saldoneutral", _tage["2027-12-08"]["saldo"], 0)
+check("Heiliger Abend halber Tag", _tage["2027-12-24"]["saldo"], -240)
+s, r = call("GET", "/api/feiertage?jahr=2027")
+check("Status jetzt erfasst", all(f["erfasst"] for f in r["feiertage"] if f["arbeitstag"]), True)
+s, r = call("GET", "/api/feiertage?jahr=abc")
+check("ungueltiges Jahr -> 400", s, 400)
+
+print("\nArbeitstage auffuellen")
+s, r = call("PUT", "/api/einstellungen", {
+    "standardzeiten": {str(d): {"von": "08:00", "bis": "16:30", "pause": 30} for d in range(1, 6)},
+    "startdatum": "2026-08-01"})
+check("Standardzeiten gespeichert", r["standardzeiten"]["1"]["bis"], "16:30")
+check("Samstag ohne Standardzeit", r["standardzeiten"]["6"], None)
+s, r = call("POST", "/api/auffuellen", {"von": "2026-08-01", "bis": "2026-08-14"})
+check("Auffuellen Status", s, 200)
+check("nur bis heute gefuellt", r["bis"] <= _dt.date.today().isoformat(), True)
+s, r2 = call("POST", "/api/auffuellen", {"von": "2026-08-01", "bis": "2026-08-14"})
+check("zweiter Lauf fuellt nichts doppelt", r2["angelegt"], 0)
+check("belegte Tage erkannt", r2["uebersprungen"]["belegt"] > 0, True)
+s, r = call("POST", "/api/auffuellen", {"von": "2026-08-31", "bis": "2026-08-01"})
+check("verdrehter Zeitraum -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"sondertage": "quatsch"})
+check("ungueltiger Sondertage-Modus -> 400", s, 400)
+
+print("\nGutschrift-Feld")
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-01", "typ": "urlaub", "gutschrift": 180})
+check("Urlaub mit Gutschrift angelegt", s, 201)
+check("Gutschrift gespeichert", r["gutschrift"], 180)
+s, a = call("GET", "/api/auswertung?von=2026-09-01&bis=2026-09-01")
+check("Gutschrift wirkt", a["gutschrift"], 180)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "urlaub", "gutschrift": -5})
+check("negative Gutschrift -> 400", s, 400)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "arbeit",
+                                       "von": "08:00", "bis": "12:00", "gutschrift": 500})
+check("Gutschrift bei Arbeit ignoriert", r["gutschrift"], None)
 
 print("\nStatische Dateien")
 s, html = call("GET", "/")

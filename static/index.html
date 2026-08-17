@@ -91,6 +91,7 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <button class="icon" onclick="shiftMonth(-1)" title="Vorheriger Monat">&#8592;</button>
   <input type="month" id="monat" style="width:auto" onchange="setzeMonat()">
   <button class="icon" onclick="shiftMonth(1)" title="N&auml;chster Monat">&#8594;</button>
+  <strong id="monatLabel" style="min-width:120px"></strong>
   <span class="hint">oder Zeitraum:</span>
   <input type="date" id="von" style="width:auto" onchange="load()">
   <input type="date" id="bis" style="width:auto" onchange="load()">
@@ -110,7 +111,9 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <form id="form" onsubmit="speichern(event)">
     <input type="hidden" id="f-id">
     <div class="grid form-row">
-      <div><label for="f-datum">Datum</label><input type="date" id="f-datum" required></div>
+      <div><label for="f-datum">Datum</label>
+        <input type="date" id="f-datum" required onchange="datumHinweis()">
+        <div class="hint" id="datumHint" style="font-size:12px;margin-top:4px"></div></div>
       <div><label for="f-typ">Art</label>
         <select id="f-typ" onchange="typWechsel()">
           <option value="arbeit">Arbeit</option>
@@ -119,9 +122,16 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
           <option value="feiertag">Feiertag</option>
           <option value="gleitzeit">Gleitzeittag</option>
         </select></div>
-      <div><label for="f-von">Von</label><input type="time" id="f-von"></div>
-      <div><label for="f-bis">Bis</label><input type="time" id="f-bis"></div>
+      <div><label for="f-von">Von (24 h)</label>
+        <input type="text" id="f-von" inputmode="numeric" autocomplete="off"
+               placeholder="08:00" maxlength="5" pattern="[0-9]{1,2}:[0-9]{2}"></div>
+      <div><label for="f-bis">Bis (24 h)</label>
+        <input type="text" id="f-bis" inputmode="numeric" autocomplete="off"
+               placeholder="17:00" maxlength="5" pattern="[0-9]{1,2}:[0-9]{2}"></div>
       <div><label for="f-pause">Pause (Min)</label><input type="number" id="f-pause" min="0" step="5" value="30"></div>
+      <div id="f-gutschrift-wrap" style="display:none">
+        <label for="f-gutschrift">Gutschrift (Min)</label>
+        <input type="number" id="f-gutschrift" min="0" step="30" placeholder="Sollzeit"></div>
       <div><label for="f-projekt">Projekt (optional)</label><input type="text" id="f-projekt" list="projekte" placeholder="z. B. Kunde A"></div>
       <datalist id="projekte"></datalist>
       <div><label for="f-notiz">Notiz (optional)</label><input type="text" id="f-notiz"></div>
@@ -139,6 +149,27 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <div id="tabelle"></div>
 </div>
 
+<div class="panel">
+  <h2>Feiertage &amp; Standardtage</h2>
+  <div class="toolbar" style="margin-bottom:12px">
+    <label for="jahr" style="margin:0">Jahr</label>
+    <input type="number" id="jahr" min="1900" max="2200" step="1" style="width:100px"
+           onchange="ladeFeiertage()">
+    <button onclick="setzeJahr(2026)">2026</button>
+    <button onclick="setzeJahr(2027)">2027</button>
+    <button class="primary" onclick="trageFeiertageEin()">Feiertage eintragen</button>
+    <button class="right" onclick="fuelleAuf()">Arbeitstage auff&uuml;llen</button>
+  </div>
+  <div id="feiertagsListe"></div>
+  <p class="hint" style="margin-bottom:0">
+    Die 13 gesetzlichen Feiertage nach dem Arbeitsruhegesetz werden im Programm berechnet,
+    also ohne Internetverbindung und f&uuml;r jedes Jahr. Der Karfreitag ist seit 2019 kein
+    allgemeiner Feiertag mehr, Landespatrone sind keine gesetzlichen Ruhetage &ndash; beide
+    fehlen daher bewusst. &bdquo;Arbeitstage auff&uuml;llen&ldquo; tr&auml;gt im gew&auml;hlten
+    Zeitraum alle vergangenen Arbeitstage ohne Eintrag mit deinen Standardzeiten ein.
+  </p>
+</div>
+
 <div class="panel" id="projektPanel" style="display:none">
   <h2>Nach Projekt</h2>
   <div id="projektListe"></div>
@@ -150,6 +181,18 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
     <div style="margin-top:16px">
       <label>Sollstunden je Wochentag</label>
       <div class="week" id="sollWeek"></div>
+
+      <label style="margin-top:18px">Feste Arbeitszeiten je Wochentag (f&uuml;r Vorbelegung und Auff&uuml;llen)</label>
+      <div id="standardWeek"></div>
+
+      <div class="grid form-row" style="margin-top:16px">
+        <div><label for="s-sondertage">24.12. und 31.12.</label>
+          <select id="s-sondertage">
+            <option value="keine">normale Arbeitstage</option>
+            <option value="halb">halber Tag frei</option>
+            <option value="ganz">ganzer Tag frei</option>
+          </select></div>
+      </div>
       <div class="grid form-row" style="margin-top:16px">
         <div><label for="s-startsaldo">Startsaldo (Stunden)</label>
           <input type="number" id="s-startsaldo" step="0.25" value="0"></div>
@@ -175,6 +218,8 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 <script>
 const WT = ["Mo","Di","Mi","Do","Fr","Sa","So"];
 const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
+const MONATE = ["Januar","Februar","März","April","Mai","Juni",
+                "Juli","August","September","Oktober","November","Dezember"];
 let settings = null;
 let aktuell = null;
 
@@ -188,6 +233,11 @@ function hm(min, mitVorzeichen){
 function klasse(min){ return min > 0 ? "plus" : (min < 0 ? "minus" : ""); }
 function iso(d){ return d.toISOString().slice(0,10); }
 function heute(){ const d = new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return iso(d); }
+function deDatum(isoDatum){ const [j,m,t] = isoDatum.split("-"); return `${t}.${m}.${j}`; }
+function wochentag(isoDatum){
+  const d = new Date(isoDatum + "T00:00:00");
+  return WT_LANG[(d.getDay() + 6) % 7];
+}
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
@@ -213,6 +263,7 @@ function setzeMonat(){
   const [j,m] = v.split("-").map(Number);
   document.getElementById("von").value = `${v}-01`;
   document.getElementById("bis").value = iso(new Date(Date.UTC(j, m, 0)));
+  document.getElementById("monatLabel").textContent = `${MONATE[m-1]} ${j}`;
   load();
 }
 function shiftMonth(delta){
@@ -256,7 +307,8 @@ function renderTabelle(a){
     <th class="hide">Projekt</th><th class="num">Dauer</th><th class="num">Saldo</th><th></th>
   </tr></thead><tbody>`;
   for (const t of a.tage){
-    const wd = t.wochentag; const we = wd >= 6;
+    const wd = t.wochentag;
+    const we = wd >= 6 || t.typen.includes("feiertag");
     t.eintraege.forEach((e, i) => {
       const dat = new Date(t.datum + "T00:00:00");
       html += `<tr class="${we ? "we" : ""}">
@@ -301,23 +353,121 @@ function renderProjekte(a){
   document.getElementById("projekte").innerHTML = namen.map(n => `<option value="${esc(n)}">`).join("");
 }
 
+// ---------- Feiertage und Standardtage ----------
+function setzeJahr(j){ document.getElementById("jahr").value = j; ladeFeiertage(); }
+
+async function ladeFeiertage(){
+  const jahr = document.getElementById("jahr").value;
+  if (!jahr) return;
+  try {
+    const res = await api(`/api/feiertage?jahr=${jahr}`);
+    const ziel = document.getElementById("feiertagsListe");
+    ziel.innerHTML = `<table><thead><tr>
+      <th>Datum</th><th>Tag</th><th>Feiertag</th><th class="num">Gutschrift</th><th>Status</th>
+      </tr></thead><tbody>` + res.feiertage.map(f => `
+      <tr class="${f.arbeitstag ? "" : "we"}">
+        <td>${deDatum(f.datum)}</td>
+        <td>${WT[f.wochentag-1]}</td>
+        <td>${esc(f.name)}${f.gesetzlich ? "" : ' <span class="tag">kein gesetzlicher Feiertag</span>'}</td>
+        <td class="num">${f.arbeitstag ? hm(f.gutschrift) : "–"}</td>
+        <td>${f.erfasst ? '<span class="tag">erfasst</span>'
+              : (f.arbeitstag ? '<span class="hint">offen</span>'
+                              : '<span class="hint">freier Tag</span>')}</td>
+      </tr>`).join("") + "</tbody></table>";
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+async function trageFeiertageEin(){
+  const jahr = document.getElementById("jahr").value;
+  if (!confirm(`Alle Feiertage ${jahr}, die auf einen Arbeitstag fallen, als Eintrag anlegen?`)) return;
+  try {
+    const res = await api("/api/feiertage", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jahr: Number(jahr)}),
+    });
+    zeige(res.angelegt
+      ? `${res.angelegt} Feiertage eingetragen, ${res.uebersprungen} übersprungen.`
+      : "Es gab nichts einzutragen – alle Feiertage sind bereits erfasst oder fallen auf freie Tage.",
+      "ok");
+    await ladeFeiertage(); await load();
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+async function fuelleAuf(){
+  const von = document.getElementById("von").value, bis = document.getElementById("bis").value;
+  if (!confirm(`Alle vergangenen Arbeitstage von ${deDatum(von)} bis ${deDatum(bis)} ohne Eintrag `
+             + "mit den Standardzeiten füllen?")) return;
+  try {
+    const res = await api("/api/auffuellen", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({von, bis}),
+    });
+    const u = res.uebersprungen;
+    zeige(res.angelegt
+      ? `${res.angelegt} Arbeitstage eingetragen (${u.belegt} bereits erfasst, `
+        + `${u.feiertag} Feiertage, ${u.ohne_standardzeit} ohne Standardzeit).`
+      : "Nichts zu füllen – alle Arbeitstage im Zeitraum sind bereits erfasst.", "ok");
+    await load();
+  } catch(e){ zeige(e.message, "err"); }
+}
+
 // ---------- Formular ----------
 function typWechsel(){
   const arbeit = document.getElementById("f-typ").value === "arbeit";
-  for (const id of ["f-von","f-bis","f-pause"]){
-    document.getElementById(id).disabled = false;
-  }
+  document.getElementById("f-gutschrift-wrap").style.display = arbeit ? "none" : "";
   document.getElementById("dauerHint").textContent = arbeit
     ? "" : "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.";
   berechneHint();
 }
 
+function datumHinweis(){
+  const v = document.getElementById("f-datum").value;
+  const el = document.getElementById("datumHint");
+  el.textContent = v ? `${WT[(new Date(v + "T00:00:00").getDay() + 6) % 7]}, ${deDatum(v)}` : "";
+  el.title = v ? wochentag(v) : "";
+  vorbelegen();
+}
+
+// Neue Eintraege mit den Standardzeiten des Wochentags vorbelegen.
+function vorbelegen(){
+  const v = document.getElementById("f-datum").value;
+  const neu = !document.getElementById("f-id").value;
+  if (!v || !neu || !settings || document.getElementById("f-typ").value !== "arbeit") return;
+  const wd = ((new Date(v + "T00:00:00").getDay() + 6) % 7) + 1;
+  const s = settings.standardzeiten[String(wd)];
+  if (!s) return;
+  document.getElementById("f-von").value = s.von;
+  document.getElementById("f-bis").value = s.bis;
+  document.getElementById("f-pause").value = s.pause ?? 0;
+  berechneHint();
+}
+
+// Erlaubt "8", "830", "8.30" oder "8:30" und macht daraus 08:30 (24-Stunden-Format).
+function normZeit(el){
+  let v = el.value.trim().replace(/[.,;\s]/g, ":");
+  if (/^\d{1,2}$/.test(v)) v = v.padStart(2, "0") + ":00";
+  else if (/^\d{3,4}$/.test(v)) v = v.padStart(4, "0").replace(/(\d{2})(\d{2})/, "$1:$2");
+  else if (/^\d{1,2}:\d{1,2}$/.test(v)){
+    const [h, m] = v.split(":");
+    v = h.padStart(2, "0") + ":" + m.padStart(2, "0");
+  }
+  el.value = v;
+  berechneHint();
+}
+
 function berechneHint(){
-  const von = document.getElementById("f-von").value;
-  const bis = document.getElementById("f-bis").value;
+  const von = document.getElementById("f-von").value.trim();
+  const bis = document.getElementById("f-bis").value.trim();
   const pause = Number(document.getElementById("f-pause").value || 0);
   const el = document.getElementById("dauerHint");
-  if (!von || !bis) return;
+  const gueltig = /^\d{1,2}:\d{2}$/;
+  if (!gueltig.test(von) || !gueltig.test(bis)){
+    if (!von && !bis && document.getElementById("f-typ").value !== "arbeit"){
+      el.textContent = "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.";
+      el.className = "hint";
+    }
+    return;
+  }
   const [h1,m1] = von.split(":").map(Number); const [h2,m2] = bis.split(":").map(Number);
   let d = (h2*60+m2) - (h1*60+m1); if (d <= 0) d += 24*60;
   d -= pause;
@@ -326,13 +476,17 @@ function berechneHint(){
 }
 ["f-von","f-bis","f-pause"].forEach(id =>
   document.getElementById(id).addEventListener("input", berechneHint));
+["f-von","f-bis"].forEach(id =>
+  document.getElementById(id).addEventListener("blur", ev => normZeit(ev.target)));
 
 function reset(){
   document.getElementById("f-id").value = "";
   document.getElementById("f-notiz").value = "";
+  document.getElementById("f-gutschrift").value = "";
   document.getElementById("formTitel").textContent = "Neuer Eintrag";
   document.getElementById("submitBtn").textContent = "Speichern";
   document.getElementById("f-datum").value = heute();
+  datumHinweis();
   berechneHint();
 }
 
@@ -345,14 +499,18 @@ function bearbeite(e){
   document.getElementById("f-pause").value = e.pause || 0;
   document.getElementById("f-projekt").value = e.projekt || "";
   document.getElementById("f-notiz").value = e.notiz || "";
+  document.getElementById("f-gutschrift").value = e.gutschrift ?? "";
   document.getElementById("formTitel").textContent = "Eintrag bearbeiten";
   document.getElementById("submitBtn").textContent = "Änderung speichern";
+  datumHinweis();
   typWechsel();
   window.scrollTo({top: 0, behavior: "smooth"});
 }
 
 async function speichern(ev){
   ev.preventDefault();
+  normZeit(document.getElementById("f-von"));
+  normZeit(document.getElementById("f-bis"));
   const id = document.getElementById("f-id").value;
   const body = {
     datum: document.getElementById("f-datum").value,
@@ -362,6 +520,8 @@ async function speichern(ev){
     pause: Number(document.getElementById("f-pause").value || 0),
     projekt: document.getElementById("f-projekt").value,
     notiz: document.getElementById("f-notiz").value,
+    gutschrift: document.getElementById("f-typ").value === "arbeit"
+      ? null : (document.getElementById("f-gutschrift").value || null),
   };
   try {
     await api(id ? `/api/eintraege/${id}` : "/api/eintraege", {
@@ -370,7 +530,9 @@ async function speichern(ev){
       body: JSON.stringify(body),
     });
     zeige(id ? "Eintrag aktualisiert." : "Eintrag gespeichert.", "ok");
-    reset(); document.getElementById("f-datum").value = body.datum;
+    reset();
+    document.getElementById("f-datum").value = body.datum;
+    datumHinweis();
     await load();
   } catch(e){ zeige(e.message, "err"); }
 }
@@ -391,6 +553,20 @@ function renderSettings(){
     <div><label title="${WT_LANG[i]}">${w}</label>
     <input type="number" step="0.25" min="0" max="24" id="soll-${i+1}"
            value="${settings.soll[String(i+1)]}"></div>`).join("");
+  document.getElementById("standardWeek").innerHTML = WT.map((w,i) => {
+    const s = settings.standardzeiten[String(i+1)] || {};
+    return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <strong style="width:32px" title="${WT_LANG[i]}">${w}</strong>
+      <input type="text" id="std-von-${i+1}" placeholder="von" maxlength="5"
+             style="width:82px" value="${esc(s.von || "")}">
+      <input type="text" id="std-bis-${i+1}" placeholder="bis" maxlength="5"
+             style="width:82px" value="${esc(s.bis || "")}">
+      <input type="number" id="std-pause-${i+1}" placeholder="Pause" min="0" step="5"
+             style="width:92px" value="${s.pause ?? ""}">
+      <span class="hint">Min Pause</span>
+    </div>`;
+  }).join("");
+  document.getElementById("s-sondertage").value = settings.sondertage || "keine";
   document.getElementById("s-startsaldo").value = settings.startsaldo;
   document.getElementById("s-startdatum").value = settings.startdatum || "";
   document.getElementById("s-name").value = settings.name || "";
@@ -401,13 +577,22 @@ function renderSettings(){
 }
 
 async function speichereEinstellungen(){
-  const soll = {};
-  for (let i = 1; i <= 7; i++) soll[String(i)] = Number(document.getElementById("soll-"+i).value || 0);
+  const soll = {}, standardzeiten = {};
+  for (let i = 1; i <= 7; i++){
+    soll[String(i)] = Number(document.getElementById("soll-"+i).value || 0);
+    const vonEl = document.getElementById("std-von-"+i), bisEl = document.getElementById("std-bis-"+i);
+    normZeit(vonEl); normZeit(bisEl);
+    standardzeiten[String(i)] = (vonEl.value && bisEl.value)
+      ? {von: vonEl.value, bis: bisEl.value,
+         pause: Number(document.getElementById("std-pause-"+i).value || 0)}
+      : null;
+  }
   try {
     settings = await api("/api/einstellungen", {
       method: "PUT", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        soll,
+        soll, standardzeiten,
+        sondertage: document.getElementById("s-sondertage").value,
         startsaldo: Number(document.getElementById("s-startsaldo").value || 0),
         startdatum: document.getElementById("s-startdatum").value,
         name: document.getElementById("s-name").value,
@@ -444,12 +629,15 @@ async function importJson(input){
 // ---------- Start ----------
 (async function init(){
   document.getElementById("monat").value = heute().slice(0,7);
+  document.getElementById("jahr").value = heute().slice(0,4);
   setzeMonat();
   try {
     settings = await api("/api/einstellungen");
     renderSettings();
+    await ladeFeiertage();
   } catch(e){ zeige(e.message, "err"); }
   reset();
+  typWechsel();
 })();
 </script>
 </body>

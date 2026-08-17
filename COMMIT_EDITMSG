@@ -1,0 +1,15 @@
+Oesterreichische Feiertage und feste Arbeitstage
+
+- Berechnung der 13 gesetzlichen Feiertage ueber die Osterformel, offline und
+  fuer jedes Jahr; Karfreitag und Landespatrone bewusst nicht enthalten
+- 24.12. und 31.12. in den Einstellungen als ganzer, halber oder kein freier Tag
+- Knopf, der alle Feiertage eines Jahres als Eintraege anlegt, ohne Doppelungen
+- feste Arbeitszeiten je Wochentag: Vorbelegung im Formular und Knopf zum
+  Auffuellen offener Arbeitstage im gewaehlten Zeitraum
+- neues Feld "gutschrift" fuer halbe freie Tage, inkl. Migration alter Datenbanken
+- Saldo: kuenftige Tage zaehlen nur mit vorhandenem Eintrag, Startdatum richtet
+  sich nach dem ersten Tag mit Arbeitszeit
+- Tests auf 82 Pruefungen erweitert, inkl. Feiertagstermine 2026 und 2027
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01V8veJhxxAKgy27o8Ms17pj
