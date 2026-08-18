@@ -92,7 +92,22 @@ async function getSettings(){
   data.standardzeiten = std;
   if (!SONDERTAGE_MODI.includes(data.sondertage)) data.sondertage = "keine";
   if (!Array.isArray(data.dienstarten)) data.dienstarten = [];
+  data.dienstarten = migriereDienstarten(data.dienstarten);
   return data;
+}
+
+// Frühere Fassungen lieferten eine einzige Dienstart „Notdienstwoche" mit
+// 120 Minuten je Tag aus. Steht die unverändert im Gerät, wird sie durch die
+// drei Notdienste ersetzt; wer selbst etwas angelegt oder geändert hat, behält
+// seine Liste.
+const ALTE_DIENSTART = {id:"notdienstwoche", name:"Notdienstwoche", pauschale:120,
+                        farbe:"#b45309"};
+function migriereDienstarten(arten){
+  if (arten.length !== 1) return arten;
+  const a = arten[0], b = ALTE_DIENSTART;
+  const gleich = Object.keys(b).length === Object.keys(a).length
+    && Object.keys(b).every(k => a[k] === b[k]);
+  return gleich ? STANDARD().dienstarten : arten;
 }
 
 function slugify(text){

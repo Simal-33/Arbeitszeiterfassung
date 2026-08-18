@@ -100,7 +100,7 @@ Die Zeit eines Notdienstes ist eine **zeitliche Pauschale**. Sie wird gesondert 
 und fließt deshalb **nicht** in Ist, Saldo oder Überstunden ein – sie steht in eigenen
 Kacheln und einem eigenen Abschnitt. Dasselbe gilt für Ausfahrten während eines Dienstes.
 
-Voreingestellt sind drei Dienste:
+Voreingestellt sind drei Dienste. Wer die App schon benutzt hat und die frühere Vorgabe „Notdienstwoche“ unverändert stehen hatte, bekommt sie beim nächsten Start durch diese drei ersetzt; eine selbst angelegte oder geänderte Liste bleibt unangetastet.
 
 | Dienst | Zeitraum | Pauschale |
 |---|---|---|

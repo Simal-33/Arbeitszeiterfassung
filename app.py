@@ -77,6 +77,22 @@ DEFAULT_SETTINGS = {
 
 SONDERTAGE_MODI = ("keine", "halb", "ganz")
 DIENST_MODI = ("durchgehend", "taeglich")
+
+# Fruehere Fassungen lieferten genau eine Dienstart "Notdienstwoche" mit
+# 120 Minuten je Tag aus.
+ALTE_DIENSTART = {"id": "notdienstwoche", "name": "Notdienstwoche",
+                  "pauschale": 120, "farbe": "#b45309"}
+
+
+def migriere_dienstarten(arten):
+    """Ersetzt die alte, unveraendert gebliebene Vorgabe durch die drei Dienste.
+
+    Nur wenn genau die frueher ausgelieferte Dienstart unangetastet dasteht - wer
+    selbst etwas angelegt oder geaendert hat, behaelt seine Liste.
+    """
+    if len(arten) == 1 and dict(arten[0]) == ALTE_DIENSTART:
+        return json.loads(json.dumps(DEFAULT_SETTINGS["dienstarten"]))
+    return arten
 WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -151,6 +167,7 @@ class Store:
             data["sondertage"] = "keine"
         if not isinstance(data.get("dienstarten"), list):
             data["dienstarten"] = []
+        data["dienstarten"] = migriere_dienstarten(data["dienstarten"])
         return data
 
     def save_settings(self, patch):
