@@ -1,5 +1,0 @@
-0000000000000000000000000000000000000000 474b29fa510eb1e16dc09442ad5fc4b96abe0ebc Markus <markussimunek@gmail.com> 1786994093 +0000	commit (initial): Erste Version der Arbeitszeiterfassung
-474b29fa510eb1e16dc09442ad5fc4b96abe0ebc d0ce0ab651c8c7b2aa45db016105e44ace5f8515 Markus <markussimunek@gmail.com> 1786994652 +0000	commit: CI-Workflow mit aktuellen Action-Versionen
-d0ce0ab651c8c7b2aa45db016105e44ace5f8515 f931cc3e97e2e271a1fd8f09068c91fee6325b7e Markus <markussimunek@gmail.com> 1786995071 +0000	commit: Deutsche Datums- und Zeitdarstellung unabhaengig von der Browsersprache
-f931cc3e97e2e271a1fd8f09068c91fee6325b7e c3d56849b7522ef44fca85b26f71f4fc188fc9ef Markus <markussimunek@gmail.com> 1786996030 +0000	commit: Oesterreichische Feiertage und feste Arbeitstage
-c3d56849b7522ef44fca85b26f71f4fc188fc9ef affe31dc9ede4a1bc9d6cfdc99cae79e2e80960b Markus <markussimunek@gmail.com> 1786997610 +0000	commit: Sicherheitsfixes, Dienstarten und Download-Workflow
