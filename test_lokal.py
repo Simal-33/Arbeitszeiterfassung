@@ -22,7 +22,12 @@ SZENARIO = {
   "einstellungen": {"soll": {"1":8,"2":8,"3":8,"4":8,"5":8,"6":0,"7":0},
                     "standardzeiten": {str(d): {"von":"08:00","bis":"16:30","pause":30} for d in range(1,6)},
                     "sondertage": "halb", "startsaldo": 2.5, "startdatum": "2026-08-01",
-                    "dienstarten": [{"id":"notdienstwoche","name":"Notdienstwoche","pauschale":120,"farbe":"#b45309"}]},
+                    "dienstarten": [
+                      {"id":"notdienstwoche","name":"Notdienstwoche","pauschale":120,"farbe":"#b45309"},
+                      {"id":"dienst-1","name":"1. Dienst","modus":"durchgehend",
+                       "starttag":1,"startzeit":"07:00","endtag":1,"endzeit":"07:00"},
+                      {"id":"dienst-2","name":"2. Dienst","modus":"taeglich",
+                       "starttag":1,"startzeit":"07:00","endtag":6,"endzeit":"20:00"}]},
   "eintraege": [
     {"datum":"2026-08-03","typ":"arbeit","von":"08:00","bis":"17:00","pause":45,"projekt":"Kunde A"},
     {"datum":"2026-08-04","typ":"urlaub"},
@@ -32,6 +37,13 @@ SZENARIO = {
     {"datum":"2026-08-10","typ":"dienst","dienstart":"notdienstwoche"},
     {"datum":"2026-08-10","typ":"arbeit","von":"23:00","bis":"01:30","pause":0,"notiz":"Einsatz"},
     {"datum":"2026-12-24","typ":"feiertag","gutschrift":240,"notiz":"Heiliger Abend"},
+    # Zeitpauschale und Ausfahrt: beide werden gesondert verrechnet und duerfen
+    # in keiner der beiden Fassungen im Saldo landen.
+    {"datum":"2026-08-17","typ":"dienst","dienstart":"dienst-1","gutschrift":1020},
+    {"datum":"2026-08-18","typ":"dienst","dienstart":"dienst-1","gutschrift":1440},
+    {"datum":"2026-08-18","typ":"ausfahrt","von":"22:00","bis":"23:30","pause":0,
+     "notiz":"Rohrbruch"},
+    {"datum":"2026-08-19","typ":"ausfahrt","von":"02:00","bis":"04:15","pause":0},
   ],
 }
 
@@ -68,7 +80,8 @@ with sync_playwright() as p:
                      ("2026-08-10","2026-08-10"), ("2026-01-01","2026-12-31")]:
         pyr = py_auswertung(von, bis)
         jsr = pg.evaluate("([v,b]) => LOKAL.ruf(`/api/auswertung?von=${v}&bis=${b}`)", [von, bis])
-        for feld in ("ist","gutschrift","soll","saldo","gesamtsaldo"):
+        for feld in ("ist","gutschrift","soll","saldo","gesamtsaldo",
+                     "pauschale","ausfahrt"):
             gleich = pyr[feld] == jsr[feld]
             fehlerhaft += 0 if gleich else 1
             print(f"  {'ok  ' if gleich else 'FAIL'} {von}..{bis} {feld:12} py={pyr[feld]:7} js={jsr[feld]:7}")

@@ -119,6 +119,14 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
     <div class="label">Soll (bis heute)</div><div class="value" id="k-soll">–</div></div>
   <div class="kpi"><div class="label">Saldo Zeitraum</div><div class="value" id="k-saldo">–</div></div>
   <div class="kpi"><div class="label">Gesamt&uuml;berstunden</div><div class="value" id="k-gesamt">–</div></div>
+  <div class="kpi" id="kpi-pauschale" style="display:none"
+       title="Zeitpauschale der Dienste. Wird gesondert verrechnet und ist in Saldo und Überstunden nicht enthalten.">
+    <div class="label">Dienstpauschale</div><div class="value" id="k-pauschale">–</div>
+    <div class="hint" style="font-size:11px">gesondert</div></div>
+  <div class="kpi" id="kpi-ausfahrt" style="display:none"
+       title="Ausfahrten während eines Dienstes. Werden gesondert verrechnet und sind in Saldo und Überstunden nicht enthalten.">
+    <div class="label">Ausfahrten</div><div class="value" id="k-ausfahrt">–</div>
+    <div class="hint" style="font-size:11px">gesondert</div></div>
 </div>
 
 <div class="panel">
@@ -137,6 +145,7 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
           <option value="feiertag">Feiertag</option>
           <option value="gleitzeit">Gleitzeittag</option>
           <option value="dienst">Dienst / Rufbereitschaft</option>
+          <option value="ausfahrt">Ausfahrt im Dienst</option>
         </select></div>
       <div id="f-dienst-wrap" style="display:none">
         <label for="f-dienstart">Dienstart</label>
@@ -179,14 +188,19 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
     <button class="primary" onclick="trageFeiertageEin()">Feiertage eintragen</button>
     <button class="right" onclick="fuelleAuf()">Arbeitstage auff&uuml;llen</button>
   </div>
-  <div class="toolbar" style="margin:0 0 16px;padding:12px;background:var(--soft);border-radius:8px">
-    <label for="d-art" style="margin:0">Dienst eintragen</label>
-    <select id="d-art" style="width:auto"></select>
-    <input type="date" id="d-von" style="width:auto">
-    <span class="hint">bis</span>
-    <input type="date" id="d-bis" style="width:auto">
-    <button onclick="setzeDienstWoche()">ganze Woche</button>
-    <button class="primary" onclick="trageDienstEin()">Dienst anlegen</button>
+  <div style="margin:0 0 16px;padding:12px;background:var(--soft);border-radius:8px">
+    <div class="toolbar" style="margin:0">
+      <label for="d-art" style="margin:0">Dienst eintragen</label>
+      <select id="d-art" style="width:auto" onchange="dienstVorschau()"></select>
+      <span class="hint">ab</span>
+      <input type="date" id="d-von" style="width:auto" onchange="dienstVorschau()">
+      <span id="d-bis-wrap" style="display:none">
+        <span class="hint">bis</span>
+        <input type="date" id="d-bis" style="width:auto" onchange="dienstVorschau()">
+      </span>
+      <button class="primary" onclick="trageDienstEin()">Dienst anlegen</button>
+    </div>
+    <div class="hint" id="dienstVorschau" style="margin-top:8px"></div>
   </div>
   <div id="feiertagsListe"></div>
   <p class="hint" style="margin-bottom:0">
@@ -201,6 +215,20 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 <div class="panel" id="dienstPanel" style="display:none">
   <h2>Dienste im Zeitraum</h2>
   <div id="dienstListe"></div>
+  <p class="hint" style="margin-bottom:0">
+    Die Zeitpauschale wird gesondert verrechnet und steckt weder im Saldo noch in
+    den &Uuml;berstunden.
+  </p>
+</div>
+
+<div class="panel" id="ausfahrtPanel" style="display:none">
+  <h2>Notdienst-Tage mit Ausfahrt</h2>
+  <div id="ausfahrtListe"></div>
+  <p class="hint" style="margin-bottom:0">
+    Ausfahrten werden ebenfalls gesondert verrechnet. Erfasst werden sie oben
+    &uuml;ber die Art &bdquo;Ausfahrt im Dienst&ldquo;; den Dienst bekommt jede
+    Ausfahrt automatisch vom Diensttag, an dem sie liegt.
+  </p>
 </div>
 
 <div class="panel" id="projektPanel" style="display:none">
@@ -260,6 +288,8 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 <script>
 const WT = ["Mo","Di","Mi","Do","Fr","Sa","So"];
 const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
+// Arten, die gesondert verrechnet werden und nicht in den Saldo zaehlen:
+const GESONDERT = ["dienst", "ausfahrt"];
 const MONATE = ["Januar","Februar","März","April","Mai","Juni",
                 "Juli","August","September","Oktober","November","Dezember"];
 let settings = null;
@@ -345,7 +375,7 @@ async function load(){
   try {
     aktuell = await api(`/api/auswertung?von=${von}&bis=${bis}`);
     renderKpis(aktuell); renderTabelle(aktuell);
-    renderDienste(aktuell); renderProjekte(aktuell);
+    renderDienste(aktuell); renderAusfahrten(aktuell); renderProjekte(aktuell);
   } catch(e){ zeige(e.message, "err"); }
 }
 
@@ -357,6 +387,12 @@ function renderKpis(a){
   s.textContent = hm(a.saldo, true); s.className = "value " + klasse(a.saldo);
   const g = document.getElementById("k-gesamt");
   g.textContent = hm(a.gesamtsaldo, true); g.className = "value " + klasse(a.gesamtsaldo);
+  // Beides wird gesondert verrechnet, steht daher neben dem Saldo statt darin.
+  for (const [feld, kachel, wert] of [["k-pauschale", "kpi-pauschale", a.pauschale],
+                                      ["k-ausfahrt", "kpi-ausfahrt", a.ausfahrt]]){
+    document.getElementById(kachel).style.display = wert ? "" : "none";
+    document.getElementById(feld).textContent = hm(wert || 0);
+  }
 }
 
 function renderTabelle(a){
@@ -376,7 +412,10 @@ function renderTabelle(a){
       const dat = new Date(t.datum + "T00:00:00");
       html += `<tr class="${we ? "we" : ""}">
         <td>${i === 0 ? `<strong>${WT[wd-1]}</strong> ${String(dat.getDate()).padStart(2,"0")}.${String(dat.getMonth()+1).padStart(2,"0")}.` : ""}</td>
-        <td><span class="tag">${esc(artName(e))}</span></td>
+        <td><span class="tag">${esc(artName(e))}</span>${
+          GESONDERT.includes(e.typ)
+            ? ' <span class="tag" title="Wird gesondert verrechnet und zählt nicht in den Saldo">gesondert</span>'
+            : ""}</td>
         <td class="hide">${e.von && e.bis ? esc(e.von) + "–" + esc(e.bis)
           : `<span class='hint'>${e.typ === "dienst" ? "Pauschale" : "ganzer Tag"}</span>`}</td>
         <td class="hide num">${e.pause ? e.pause + " min" : ""}</td>
@@ -398,6 +437,7 @@ function renderTabelle(a){
 }
 
 function artName(e){
+  if (e.typ === "ausfahrt") return "Ausfahrt";
   if (e.typ !== "dienst") return e.typ.charAt(0).toUpperCase() + e.typ.slice(1);
   const art = (settings?.dienstarten || []).find(a => a.id === e.dienstart);
   return art ? art.name : "Dienst";
@@ -409,9 +449,45 @@ function renderDienste(a){
   panel.style.display = "block";
   document.getElementById("dienstListe").innerHTML =
     `<table><thead><tr><th>Dienst</th><th class="num">Tage</th>
-     <th class="num">Pauschale gesamt</th></tr></thead><tbody>` +
+     <th class="num">Pauschale gesamt</th><th class="num">Ausfahrten</th>
+     <th class="num">davon Zeit</th></tr></thead><tbody>` +
     a.dienste.map(d => `<tr><td>${esc(d.name)}</td><td class="num">${d.tage}</td>
-      <td class="num">${hm(d.minuten)}</td></tr>`).join("") + "</tbody></table>";
+      <td class="num">${hm(d.minuten)}</td>
+      <td class="num">${d.ausfahrten || 0}</td>
+      <td class="num">${d.ausfahrt_minuten ? hm(d.ausfahrt_minuten) : "–"}</td></tr>`).join("")
+    + "</tbody></table>";
+}
+
+function renderAusfahrten(a){
+  const panel = document.getElementById("ausfahrtPanel");
+  const liste = a.ausfahrten || [];
+  if (!liste.length){ panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const summe = liste.reduce((s, x) => s + x.minuten, 0);
+  document.getElementById("ausfahrtListe").innerHTML =
+    `<table><thead><tr><th>Tag</th><th>Dienst</th><th>Von–Bis</th>
+     <th class="hide num">Pause</th><th class="hide">Notiz</th>
+     <th class="num">Dauer</th><th></th></tr></thead><tbody>` +
+    liste.map(x => {
+      const d = new Date(x.datum + "T00:00:00");
+      const we = x.wochentag >= 6;
+      return `<tr class="${we ? "we" : ""}">
+        <td><strong>${WT[x.wochentag-1]}</strong> ${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}.</td>
+        <td>${x.dienst ? esc(x.dienst)
+             : '<span class="hint">ohne Diensttag</span>'}</td>
+        <td>${esc(x.von)}–${esc(x.bis)}</td>
+        <td class="hide num">${x.pause ? x.pause + " min" : ""}</td>
+        <td class="hide">${esc(x.notiz)}</td>
+        <td class="num">${hm(x.minuten)}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="icon" title="Bearbeiten" onclick="bearbeite(${x.id})">&#9998;</button>
+          <button class="icon danger" title="L&ouml;schen" onclick="loesche(${x.id})">&#10005;</button>
+        </td></tr>`;
+    }).join("") +
+    `</tbody><tfoot><tr>
+     <td colspan="3"><strong>${liste.length} Ausfahrt${liste.length === 1 ? "" : "en"}</strong></td>
+     <td class="hide num"></td><td class="hide"></td>
+     <td class="num"><strong>${hm(summe)}</strong></td><td></td></tr></tfoot></table>`;
 }
 
 function renderProjekte(a){
@@ -454,23 +530,48 @@ function zeichneDienstarten(){
     ziel.innerHTML = '<p class="hint" style="margin:6px 0">Noch keine Dienstart angelegt.</p>';
     return;
   }
+  const tagOpt = (i, feld, wert) => WT_LANG.map((t, n) =>
+    `<option value="${n+1}"${Number(wert) === n+1 ? " selected" : ""}>${t}</option>`).join("");
   ziel.innerHTML = liste.map((a, i) => `
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-      <input type="text" value="${esc(a.name)}" style="width:180px" placeholder="Name"
-             oninput="dienstartFeld(${i},'name',this.value)">
-      <input type="number" value="${Number(a.pauschale) || 0}" min="0" max="1440" step="15"
-             style="width:96px" oninput="dienstartFeld(${i},'pauschale',this.value)">
-      <span class="hint">Min/Tag</span>
-      <input type="color" value="${esc(a.farbe || "#b45309")}" style="width:48px;padding:2px"
-             oninput="dienstartFeld(${i},'farbe',this.value)">
-      <button type="button" class="icon danger" title="Entfernen"
-              onclick="dienstartWeg(${i})">&#10005;</button>
+    <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="text" value="${esc(a.name)}" style="width:150px" placeholder="Name"
+               oninput="dienstartFeld(${i},'name',this.value)">
+        <select style="width:auto" onchange="dienstartFeld(${i},'modus',this.value);zeichneDienstarten()">
+          <option value=""${a.modus ? "" : " selected"}>fester Wert je Tag</option>
+          <option value="durchgehend"${a.modus === "durchgehend" ? " selected" : ""}>durchgehend</option>
+          <option value="taeglich"${a.modus === "taeglich" ? " selected" : ""}>täglich im Zeitfenster</option>
+        </select>
+        <input type="color" value="${esc(a.farbe || "#b45309")}" style="width:48px;padding:2px"
+               oninput="dienstartFeld(${i},'farbe',this.value)">
+        <button type="button" class="icon danger right" title="Entfernen"
+                onclick="dienstartWeg(${i})">&#10005;</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        ${a.modus ? `
+          <span class="hint">von</span>
+          <select style="width:auto" onchange="dienstartFeld(${i},'starttag',this.value)">${tagOpt(i,"starttag",a.starttag || 1)}</select>
+          <input type="text" value="${esc(a.startzeit || "07:00")}" style="width:76px"
+                 placeholder="07:00" oninput="dienstartFeld(${i},'startzeit',this.value)">
+          <span class="hint">bis</span>
+          <select style="width:auto" onchange="dienstartFeld(${i},'endtag',this.value)">${tagOpt(i,"endtag",a.endtag || 1)}</select>
+          <input type="text" value="${esc(a.endzeit || "07:00")}" style="width:76px"
+                 placeholder="20:00" oninput="dienstartFeld(${i},'endzeit',this.value)">
+          <span class="hint">${a.dauer != null
+            ? `= ${hm(a.dauer)} h Pauschale, ${a.tage} Tage` : "Pauschale wird beim Speichern gerechnet"}</span>
+        ` : `
+          <input type="number" value="${Number(a.pauschale) || 0}" min="0" max="1440" step="15"
+                 style="width:96px" oninput="dienstartFeld(${i},'pauschale',this.value)">
+          <span class="hint">Minuten je Diensttag</span>
+        `}
+      </div>
     </div>`).join("");
 }
 
 function dienstartFeld(i, feld, wert){ dienstListe()[i][feld] = wert; }
 function dienstartHinzu(){
-  dienstListe().push({name: "", pauschale: 120, farbe: "#b45309"});
+  dienstListe().push({name: "", modus: "taeglich", starttag: 1, startzeit: "07:00",
+                      endtag: 6, endzeit: "20:00", pauschale: 0, farbe: "#b45309"});
   zeichneDienstarten();
 }
 function dienstartWeg(i){
@@ -481,48 +582,81 @@ function dienstartWeg(i){
   zeichneDienstarten();
 }
 
+// Beschreibt den Wochenrhythmus einer Dienstart in Worten, z. B.
+// "Mo 07:00 – Mo 07:00 durchgehend" oder "Mo–Sa je 07:00–20:00".
+function dienstRhythmus(a){
+  if (!a?.modus) return "";
+  const von = WT[a.starttag - 1], bis = WT[a.endtag - 1];
+  return a.modus === "taeglich"
+    ? `${von}–${bis} je ${a.startzeit}–${a.endzeit}`
+    : `${von} ${a.startzeit} – ${bis} ${a.endzeit} durchgehend`;
+}
+
 function fuelleDienstAuswahl(){
   const arten = settings?.dienstarten || [];
-  const html = arten.map(a =>
-    `<option value="${esc(a.id)}">${esc(a.name)} (${hm(a.pauschale)} h/Tag)</option>`).join("");
+  // 'dauer' liefert die Auswertung mit; sie ist in beiden Betriebsarten gleich.
+  const html = arten.map(a => `<option value="${esc(a.id)}">${esc(a.name)}`
+    + (a.modus ? ` (${hm(a.dauer || 0)} h)` : ` (${hm(a.pauschale)} h/Tag)`)
+    + "</option>").join("");
   for (const id of ["f-dienstart", "d-art"]){
     const el = document.getElementById(id);
     const alt = el.value;
     el.innerHTML = html || '<option value="">keine Dienstart angelegt</option>';
     if (alt) el.value = alt;
   }
+  dienstVorschau();
 }
 
 function dienstWechsel(){
   const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("f-dienstart").value);
   if (art && !document.getElementById("f-id").value){
-    document.getElementById("f-gutschrift").value = art.pauschale;
+    // Einzelner Diensttag: bei festem Rhythmus der uebliche Anteil eines Tages.
+    document.getElementById("f-gutschrift").value = art.modus && art.tage
+      ? Math.round(art.dauer / art.tage) : art.pauschale;
   }
 }
 
-function setzeDienstWoche(){
-  const start = document.getElementById("d-von").value || heute();
-  const d = new Date(start + "T00:00:00");
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));          // auf Montag zurueck
-  const mo = iso(new Date(d.getTime() - d.getTimezoneOffset() * 60000));
-  const so = new Date(d); so.setDate(so.getDate() + 6);
-  document.getElementById("d-von").value = mo;
-  document.getElementById("d-bis").value = iso(new Date(so.getTime() - so.getTimezoneOffset() * 60000));
+// Zeigt vor dem Anlegen, welche Tage der Dienst tatsaechlich belegt.
+function dienstVorschau(){
+  const el = document.getElementById("dienstVorschau");
+  const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("d-art").value);
+  const wrap = document.getElementById("d-bis-wrap");
+  if (!art){ el.textContent = ""; wrap.style.display = "none"; return; }
+  // Ohne Wochenrhythmus braucht es weiterhin ein Enddatum von Hand.
+  wrap.style.display = art.modus ? "none" : "";
+  const von = document.getElementById("d-von").value;
+  if (!art.modus){
+    el.textContent = `${art.name}: ${hm(art.pauschale)} h je Tag im gewählten Zeitraum.`;
+    return;
+  }
+  if (!von){ el.textContent = `${art.name}: ${dienstRhythmus(art)}, ${hm(art.dauer)} h Pauschale.`; return; }
+  // Beginn auf den Starttag der Dienstart zurueckziehen - wie im Rechenteil.
+  const d = new Date(von + "T00:00:00");
+  const wd = ((d.getDay() + 6) % 7) + 1;
+  d.setDate(d.getDate() - ((wd - art.starttag + 7) % 7));
+  const start = iso(new Date(d.getTime() - d.getTimezoneOffset() * 60000));
+  const ende = new Date(d); ende.setDate(ende.getDate() + art.tage - 1);
+  const stop = iso(new Date(ende.getTime() - ende.getTimezoneOffset() * 60000));
+  el.textContent = `${art.name}: ${dienstRhythmus(art)} — ${deDatum(start)} bis ${deDatum(stop)}, `
+    + `${art.tage} Tage, ${hm(art.dauer)} h Pauschale (gesondert verrechnet).`;
 }
 
 async function trageDienstEin(){
   const dienstart = document.getElementById("d-art").value;
   const von = document.getElementById("d-von").value;
-  const bis = document.getElementById("d-bis").value || von;
+  const art = (settings?.dienstarten || []).find(a => a.id === dienstart);
   if (!dienstart) return zeige("Bitte zuerst eine Dienstart in den Einstellungen anlegen.", "err");
   if (!von) return zeige("Bitte ein Startdatum für den Dienst wählen.", "err");
+  // Das Enddatum ergibt sich aus dem Rhythmus; nur ohne Rhythmus wird es gebraucht.
+  const bis = art?.modus ? undefined : (document.getElementById("d-bis").value || von);
   try {
     const res = await api("/api/dienste", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({dienstart, von, bis}),
     });
-    zeige(`${res.name}: ${res.angelegt} Tage eingetragen (${hm(res.minuten)} h Pauschale`
-      + (res.uebersprungen ? `, ${res.uebersprungen} bereits vorhanden).` : ")."), "ok");
+    zeige(`${res.name}: ${res.angelegt} Tage eingetragen, ${deDatum(res.von)} bis ${deDatum(res.bis)} `
+      + `(${hm(res.pauschale)} h Pauschale, gesondert verrechnet`
+      + (res.uebersprungen ? `; ${res.uebersprungen} Tage bereits vorhanden).` : ")."), "ok");
     await load();
   } catch(e){ zeige(e.message, "err"); }
 }
@@ -588,12 +722,16 @@ async function fuelleAuf(){
 // ---------- Formular ----------
 function typWechsel(){
   const typ = document.getElementById("f-typ").value;
-  const arbeit = typ === "arbeit", dienst = typ === "dienst";
-  document.getElementById("f-gutschrift-wrap").style.display = arbeit ? "none" : "";
+  const dienst = typ === "dienst", ausfahrt = typ === "ausfahrt";
+  // Arbeit und Ausfahrt rechnen aus Von/Bis, brauchen also kein Gutschrift-Feld.
+  const ausZeiten = typ === "arbeit" || ausfahrt;
+  document.getElementById("f-gutschrift-wrap").style.display = ausZeiten ? "none" : "";
   document.getElementById("f-dienst-wrap").style.display = dienst ? "" : "none";
-  document.getElementById("dauerHint").textContent = arbeit ? ""
-    : (dienst ? "Die Pauschale wird gutgeschrieben; Einsätze zusätzlich als Arbeit erfassen."
-              : "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.");
+  document.getElementById("dauerHint").textContent =
+    typ === "arbeit" ? ""
+    : ausfahrt ? "Ausfahrt im Dienst: wird gesondert verrechnet und zählt nicht in den Saldo."
+    : dienst ? "Einzelner Diensttag. Ganze Dienste legst du unten mit „Dienst anlegen“ an."
+    : "Ohne Uhrzeiten wird der Sollwert des Tages gutgeschrieben.";
   if (dienst) dienstWechsel();
   berechneHint();
 }

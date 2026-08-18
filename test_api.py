@@ -353,11 +353,16 @@ s, r = call("POST", "/api/eintraege", {"datum": "2026-09-08", "typ": "arbeit",
 check("Einsatz angelegt", s, 201)
 s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
 _t = {t["datum"]: t for t in a["tage"]}
-check("Diensttag Pauschale", _t["2026-09-07"]["gutschrift"], 120)
-check("Diensttag Saldo (Soll 8 h)", _t["2026-09-07"]["saldo"], 120 - 480)
+# Die Pauschale wird gesondert verrechnet: eigener Topf, nicht in Gutschrift,
+# nicht im Saldo und nicht in den Ueberstunden.
+check("Diensttag Pauschale getrennt", _t["2026-09-07"]["pauschale"], 120)
+check("Diensttag ohne Gutschrift", _t["2026-09-07"]["gutschrift"], 0)
+check("Diensttag Saldo (Soll 8 h)", _t["2026-09-07"]["saldo"], -480)
 check("Einsatz zaehlt zusaetzlich", _t["2026-09-08"]["ist"], 150)
-check("Einsatztag gesamt", _t["2026-09-08"]["saldo"], 150 + 120 - 480)
-check("Sonntag im Dienst", _t["2026-09-13"]["saldo"], 120)
+check("Einsatztag gesamt", _t["2026-09-08"]["saldo"], 150 - 480)
+check("Sonntag im Dienst bleibt neutral", _t["2026-09-13"]["saldo"], 0)
+check("Pauschale im Zeitraum", a["pauschale"], 840)
+check("Pauschale nicht in erfasst", a["erfasst"], a["ist"] + a["gutschrift"])
 check("Dienstauswertung Tage", a["dienste"][0]["tage"], 7)
 check("Dienstauswertung Minuten", a["dienste"][0]["minuten"], 840)
 check("Dienstauswertung Name", a["dienste"][0]["name"], "Notdienstwoche")
@@ -375,6 +380,89 @@ s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": exp})
 check("Reimport mit Diensten", s, 200)
 s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
 check("Dienste nach Reimport unveraendert", a["dienste"][0]["minuten"], 840)
+
+
+print("\nNotdienst mit Wochenrhythmus")
+# 1. Dienst laeuft Montag 07:00 bis Montag 07:00 durchgehend, der 2. und der
+# 3. Dienst gelten an jedem Tag zwischen 07:00 und 20:00.
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "1. Dienst", "modus": "durchgehend",
+     "starttag": 1, "startzeit": "07:00", "endtag": 1, "endzeit": "07:00"},
+    {"name": "2. Dienst", "modus": "taeglich",
+     "starttag": 1, "startzeit": "07:00", "endtag": 6, "endzeit": "20:00"},
+    {"name": "3. Dienst", "modus": "taeglich",
+     "starttag": 5, "startzeit": "07:00", "endtag": 6, "endzeit": "20:00"},
+]})
+check("drei Dienstarten gespeichert", s, 200)
+_dauer = {a["name"]: a["dauer"] for a in r["dienstarten"]}
+check("1. Dienst = 168 h", _dauer["1. Dienst"], 168 * 60)
+check("2. Dienst = 78 h", _dauer["2. Dienst"], 78 * 60)
+check("3. Dienst = 26 h", _dauer["3. Dienst"], 26 * 60)
+_tage = {a["name"]: a["tage"] for a in r["dienstarten"]}
+check("1. Dienst deckt acht Kalendertage", _tage["1. Dienst"], 8)
+check("2. Dienst deckt sechs Tage", _tage["2. Dienst"], 6)
+check("3. Dienst deckt zwei Tage", _tage["3. Dienst"], 2)
+
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "Kaputt", "modus": "quer", "starttag": 1, "startzeit": "07:00",
+     "endtag": 2, "endzeit": "20:00"}]})
+check("unbekannter Modus -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "Kaputt", "modus": "taeglich", "starttag": 9, "startzeit": "07:00",
+     "endtag": 2, "endzeit": "20:00"}]})
+check("Wochentag 9 -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "Kaputt", "modus": "taeglich", "starttag": 1, "startzeit": "sieben",
+     "endtag": 2, "endzeit": "20:00"}]})
+check("Startzeit als Wort -> 400", s, 400)
+
+# Mittwoch gewaehlt: der Dienst zieht auf seinen Starttag zurueck
+s, r = call("POST", "/api/dienste", {"dienstart": "1-dienst", "von": "2026-10-07"})
+check("1. Dienst beginnt am Montag", r["von"], "2026-10-05")
+check("1. Dienst endet am Montag darauf", r["bis"], "2026-10-12")
+check("1. Dienst legt acht Tage an", r["angelegt"], 8)
+check("1. Dienst Pauschale 168 h", r["pauschale"], 168 * 60)
+
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-12")
+_t = {t["datum"]: t for t in a["tage"]}
+check("erster Tag ab 07:00", _t["2026-10-05"]["pauschale"], 17 * 60)
+check("Tag dazwischen voll", _t["2026-10-07"]["pauschale"], 24 * 60)
+check("letzter Tag bis 07:00", _t["2026-10-12"]["pauschale"], 7 * 60)
+check("Pauschale gesamt 168 h", a["pauschale"], 168 * 60)
+check("Pauschale nicht im Saldo", _t["2026-10-06"]["saldo"], -480)
+
+print("\nAusfahrten im Dienst")
+s, r = call("POST", "/api/eintraege", {"datum": "2026-10-06", "typ": "ausfahrt",
+                                       "von": "22:00", "bis": "23:30", "pause": 0,
+                                       "notiz": "Rohrbruch"})
+check("Ausfahrt angelegt", s, 201)
+_ausfahrt_id = r["id"]
+s, r = call("POST", "/api/eintraege", {"datum": "2026-10-06", "typ": "ausfahrt"})
+check("Ausfahrt ohne Uhrzeit -> 400", s, 400)
+
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-12")
+_t = {t["datum"]: t for t in a["tage"]}
+check("Ausfahrt im eigenen Topf", _t["2026-10-06"]["ausfahrt"], 90)
+check("Ausfahrt nicht im Ist", _t["2026-10-06"]["ist"], 0)
+check("Ausfahrt nicht im Saldo", _t["2026-10-06"]["saldo"], -480)
+check("Ausfahrten gesamt", a["ausfahrt"], 90)
+check("Ausfahrt in der Liste", len(a["ausfahrten"]), 1)
+check("Ausfahrt kennt ihren Dienst", a["ausfahrten"][0]["dienst"], "1. Dienst")
+check("Ausfahrt am Dienst gezaehlt", a["dienste"][0]["ausfahrten"], 1)
+check("Ausfahrtzeit am Dienst", a["dienste"][0]["ausfahrt_minuten"], 90)
+check("Ausfahrt nicht in erfasst", a["erfasst"], a["ist"] + a["gutschrift"])
+
+# Ohne Diensttag darunter bleibt die Ausfahrt sichtbar, nur ohne Zuordnung
+s, r = call("POST", "/api/eintraege", {"datum": "2026-11-04", "typ": "ausfahrt",
+                                       "von": "09:00", "bis": "10:00", "pause": 0})
+check("Ausfahrt ohne Dienst angelegt", s, 201)
+s, a = call("GET", "/api/auswertung?von=2026-11-04&bis=2026-11-04")
+check("Ausfahrt ohne Dienst gelistet", len(a["ausfahrten"]), 1)
+check("Ausfahrt ohne Dienstnamen", a["ausfahrten"][0]["dienst"], "")
+
+s, csv_text = call("GET", "/api/export.csv?von=2026-10-06&bis=2026-10-06")
+check("CSV kennt die Verrechnungsspalte", "Verrechnung" in csv_text.splitlines()[0], True)
+check("CSV markiert Ausfahrt als gesondert", "Ausfahrt" in csv_text and "gesondert" in csv_text, True)
 
 print("\nStatische Dateien")
 s, html = call("GET", "/")

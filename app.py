@@ -24,9 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-ENTRY_TYPES = ("arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst")
+ENTRY_TYPES = ("arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst", "ausfahrt")
 # Typen, die den Soll-Wert des Tages automatisch gutschreiben:
 CREDIT_TYPES = ("urlaub", "krank", "feiertag", "gleitzeit")
+# Typen, die gesondert verrechnet werden und daher nie in Ist, Saldo oder
+# Ueberstunden einfliessen: die Zeitpauschale des Dienstes und die Ausfahrten
+# waehrend eines Dienstes.
+SEPARATE_TYPES = ("dienst", "ausfahrt")
 
 DEFAULT_SETTINGS = {
     # Sollstunden je Wochentag, 1 = Montag ... 7 = Sonntag
@@ -43,12 +47,26 @@ DEFAULT_SETTINGS = {
     },
     # Behandlung von 24.12. und 31.12.: "keine", "halb" oder "ganz"
     "sondertage": "keine",
-    # Frei definierbare Dienste (Rufbereitschaft, Notdienstwoche, ...).
-    # pauschale = Gutschrift in Minuten je Diensttag; Einsaetze werden zusaetzlich
-    # als normale Arbeitszeit erfasst.
+    # Frei definierbare Dienste (Notdienst, Rufbereitschaft, ...).
+    #
+    # Jede Dienstart beschreibt einen festen Wochenrhythmus:
+    #   modus "durchgehend" laeuft ohne Unterbrechung von starttag/startzeit bis
+    #     endtag/endzeit, z. B. Montag 07:00 bis Montag 07:00 der Folgewoche.
+    #   modus "taeglich" gilt an jedem Tag von starttag bis endtag jeweils
+    #     zwischen startzeit und endzeit, z. B. Montag bis Samstag 07:00-20:00.
+    # Die Dauer ist eine zeitliche Pauschale: sie wird gesondert verrechnet und
+    # zaehlt nie als Arbeitszeit. "pauschale" dient nur noch als Rueckfallwert in
+    # Minuten je Tag fuer Dienstarten ohne Wochenrhythmus.
     "dienstarten": [
-        {"id": "notdienstwoche", "name": "Notdienstwoche", "pauschale": 120,
-         "farbe": "#b45309"},
+        {"id": "dienst-1", "name": "1. Dienst", "modus": "durchgehend",
+         "starttag": 1, "startzeit": "07:00", "endtag": 1, "endzeit": "07:00",
+         "pauschale": 0, "farbe": "#b45309"},
+        {"id": "dienst-2", "name": "2. Dienst", "modus": "taeglich",
+         "starttag": 1, "startzeit": "07:00", "endtag": 6, "endzeit": "20:00",
+         "pauschale": 0, "farbe": "#0f766e"},
+        {"id": "dienst-3", "name": "3. Dienst", "modus": "taeglich",
+         "starttag": 5, "startzeit": "07:00", "endtag": 6, "endzeit": "20:00",
+         "pauschale": 0, "farbe": "#6d28d9"},
     ],
     # Startsaldo in Stunden (Uebertrag aus dem alten System)
     "startsaldo": 0.0,
@@ -58,6 +76,7 @@ DEFAULT_SETTINGS = {
 }
 
 SONDERTAGE_MODI = ("keine", "halb", "ganz")
+DIENST_MODI = ("durchgehend", "taeglich")
 WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -198,8 +217,37 @@ class Store:
                 farbe = str(roh.get("farbe") or "").strip()
                 if not re.match(r"^#[0-9a-fA-F]{6}$", farbe):
                     farbe = "#b45309"
-                arten.append({"id": kennung, "name": name, "pauschale": pauschale,
-                              "farbe": farbe})
+                art = {"id": kennung, "name": name, "pauschale": pauschale,
+                       "farbe": farbe}
+
+                # Wochenrhythmus ist freiwillig; ohne ihn bleibt es bei der
+                # festen Pauschale je Tag.
+                modus = str(roh.get("modus") or "").strip().lower()
+                if modus:
+                    if modus not in DIENST_MODI:
+                        raise ValueError(
+                            "Modus von '%s' muss 'durchgehend' oder 'taeglich' sein." % name)
+                    try:
+                        starttag = int(roh.get("starttag") or 0)
+                        endtag = int(roh.get("endtag") or 0)
+                    except (TypeError, ValueError):
+                        raise ValueError("Start- und Endtag von '%s' muessen Zahlen sein." % name)
+                    if not (1 <= starttag <= 7 and 1 <= endtag <= 7):
+                        raise ValueError(
+                            "Start- und Endtag von '%s' muessen zwischen 1 (Montag) "
+                            "und 7 (Sonntag) liegen." % name)
+                    for feld, wert in (("startzeit", roh.get("startzeit")),
+                                       ("endzeit", roh.get("endzeit"))):
+                        if not TIME_RE.match(str(wert or "")):
+                            raise ValueError(
+                                "%s von '%s' muss im Format HH:MM sein." % (feld, name))
+                        parse_time(str(wert))
+                    art.update(modus=modus, starttag=starttag, endtag=endtag,
+                               startzeit=str(roh["startzeit"]),
+                               endzeit=str(roh["endzeit"]))
+                    if not dienst_tage(art, date(2024, 1, 1)):
+                        raise ValueError("'%s' ergibt keine Dienstzeit." % name)
+                arten.append(art)
             current["dienstarten"] = arten
         if "sondertage" in patch:
             modus = (patch["sondertage"] or "keine").strip().lower()
@@ -390,13 +438,14 @@ def clean_entry(raw, dienstarten=None):
     else:
         dienstart = ""
 
-    if typ == "arbeit":
+    if typ in ("arbeit", "ausfahrt"):
         if not von or not bis:
-            raise ValueError("Bei Arbeitszeit sind 'Von' und 'Bis' noetig.")
+            was = "einer Ausfahrt" if typ == "ausfahrt" else "Arbeitszeit"
+            raise ValueError("Bei %s sind 'Von' und 'Bis' noetig." % was)
         dauer = duration_minutes(von, bis, pause)
         if dauer < 0:
             raise ValueError("Die Pause ist laenger als die erfasste Zeitspanne.")
-        gutschrift = None  # Arbeitszeit ergibt sich aus Von/Bis
+        gutschrift = None  # Dauer ergibt sich aus Von/Bis
     else:
         if von and bis:
             if duration_minutes(von, bis, pause) < 0:
@@ -428,6 +477,81 @@ def duration_minutes(von, bis, pause):
     return end - start - int(pause or 0)
 
 
+def dienst_start(art, datum):
+    """Legt den Beginn eines Dienstes auf den Starttag der Dienstart.
+
+    Genommen wird der letzte passende Wochentag, der nicht nach 'datum' liegt -
+    wer also mitten in der Woche einen Dienst anlegt, bekommt den Dienst, in dem
+    er gerade steckt, und nicht den der Folgewoche.
+    """
+    d = date.fromisoformat(datum) if isinstance(datum, str) else datum
+    starttag = int(art.get("starttag") or 0)
+    if not 1 <= starttag <= 7:
+        return d
+    return d - timedelta(days=(d.isoweekday() - starttag) % 7)
+
+
+def dienst_tage(art, datum):
+    """Liefert [(datum, minuten), ...] fuer einen Dienst, der bei 'datum' liegt.
+
+    Die Minuten sind der Anteil der Zeitpauschale, der auf den jeweiligen
+    Kalendertag faellt. Ohne hinterlegten Wochenrhythmus bleibt es beim alten
+    Verhalten: ein einzelner Tag mit der festen Pauschale.
+    """
+    d0 = dienst_start(art, datum)
+    modus = str(art.get("modus") or "").strip().lower()
+    starttag = int(art.get("starttag") or 0)
+    endtag = int(art.get("endtag") or 0)
+    if modus not in DIENST_MODI or not (1 <= starttag <= 7 and 1 <= endtag <= 7):
+        return [(d0.isoformat(), int(art.get("pauschale") or 0))]
+
+    beginn = parse_time(art.get("startzeit") or "00:00")
+    ende = parse_time(art.get("endzeit") or "00:00")
+
+    if modus == "taeglich":
+        # An jedem Tag dasselbe Zeitfenster, z. B. Montag bis Samstag 07:00-20:00.
+        laenge = ende - beginn
+        if laenge <= 0:
+            laenge += 24 * 60
+        anzahl = (endtag - starttag) % 7 + 1
+        return [((d0 + timedelta(days=i)).isoformat(), laenge) for i in range(anzahl)]
+
+    # durchgehend, z. B. Montag 07:00 bis Montag 07:00: der erste und der letzte
+    # Kalendertag sind angebrochen, die dazwischen zaehlen voll.
+    spanne = (endtag - starttag) % 7
+    if spanne == 0 and ende <= beginn:
+        spanne = 7                      # gleicher Wochentag heisst eine volle Woche
+    rest = spanne * 24 * 60 + (ende - beginn)
+    if rest <= 0:
+        return []
+    tage, tag, platz = [], 0, 24 * 60 - beginn
+    while rest > 0:
+        anteil = min(platz, rest)
+        tage.append(((d0 + timedelta(days=tag)).isoformat(), anteil))
+        rest -= anteil
+        tag += 1
+        platz = 24 * 60
+    return tage
+
+
+def dienst_pauschale(art):
+    """Gesamte Zeitpauschale einer Dienstart in Minuten."""
+    # Das Ergebnis haengt nur an der Definition, das Bezugsdatum ist beliebig.
+    return sum(m for _, m in dienst_tage(art, date(2024, 1, 1)))
+
+
+def mit_dauer(settings):
+    """Einstellungen fuer die Anzeige: jede Dienstart bekommt ihre Gesamtdauer.
+
+    So muss die Oberflaeche die Pauschale nicht selbst ausrechnen und kann in
+    beiden Betriebsarten dieselbe Zahl zeigen.
+    """
+    kopie = dict(settings)
+    kopie["dienstarten"] = [dict(a, dauer=dienst_pauschale(a), tage=len(dienst_tage(a, date(2024, 1, 1))))
+                            for a in (settings.get("dienstarten") or [])]
+    return kopie
+
+
 def daterange(start, end):
     d = start
     while d <= end:
@@ -449,6 +573,7 @@ def compute(entries, settings, von, bis):
     for e in entries:
         tag = tage.setdefault(e["datum"], {
             "datum": e["datum"], "ist": 0, "gutschrift": 0,
+            "pauschale": 0, "ausfahrt": 0,
             "typen": [], "eintraege": [],
         })
         minuten = 0
@@ -456,9 +581,14 @@ def compute(entries, settings, von, bis):
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
             tag["ist"] += minuten
         elif e["typ"] == "dienst":
-            # Dienste bringen ihre Pauschale, niemals das Tagessoll
+            # Die Zeitpauschale des Dienstes wird gesondert verrechnet und
+            # bleibt aus Ist, Saldo und Ueberstunden heraus.
             minuten = int(e.get("gutschrift") or 0)
-            tag["gutschrift"] += minuten
+            tag["pauschale"] += minuten
+        elif e["typ"] == "ausfahrt":
+            # Ausfahrten waehrend eines Dienstes ebenso.
+            minuten = duration_minutes(e["von"], e["bis"], e["pause"])
+            tag["ausfahrt"] += minuten
         elif e.get("gutschrift") is not None:
             # Explizite Gutschrift, z. B. halber Tag am 24.12.
             minuten = int(e["gutschrift"])
@@ -494,6 +624,8 @@ def compute(entries, settings, von, bis):
 
     ist_gesamt = sum(t["ist"] for d, t in tage.items() if zaehlt(d))
     gutschrift_gesamt = sum(t["gutschrift"] for d, t in tage.items() if zaehlt(d))
+    pauschale_gesamt = sum(t["pauschale"] for d, t in tage.items() if zaehlt(d))
+    ausfahrt_gesamt = sum(t["ausfahrt"] for d, t in tage.items() if zaehlt(d))
 
     projekte = {}
     for e in entries:
@@ -515,6 +647,8 @@ def compute(entries, settings, von, bis):
             "wochentag": wd,
             "ist": t["ist"],
             "gutschrift": t["gutschrift"],
+            "pauschale": t["pauschale"],
+            "ausfahrt": t["ausfahrt"],
             "soll": t_soll,
             "saldo": t_saldo,
             "typen": t["typen"],
@@ -522,13 +656,44 @@ def compute(entries, settings, von, bis):
         })
 
     namen = {a["id"]: a["name"] for a in (settings.get("dienstarten") or [])}
+    # Welcher Dienst laeuft an welchem Tag? Damit bekommt jede Ausfahrt ihren
+    # Dienst zugeordnet, ohne dass er am Eintrag mitgefuehrt werden muss.
+    dienst_am_tag = {e["datum"]: (e.get("dienstart") or "")
+                     for e in entries if e["typ"] == "dienst"}
+
     dienste = {}
     for e in entries:
         if e["typ"] != "dienst" or not zaehlt(e["datum"]):
             continue
-        d = dienste.setdefault(e.get("dienstart") or "", {"tage": 0, "minuten": 0})
+        d = dienste.setdefault(e.get("dienstart") or "",
+                               {"tage": 0, "minuten": 0, "ausfahrten": 0,
+                                "ausfahrt_minuten": 0})
         d["tage"] += 1
         d["minuten"] += int(e.get("gutschrift") or 0)
+
+    ausfahrten = []
+    for e in entries:
+        if e["typ"] != "ausfahrt" or not zaehlt(e["datum"]):
+            continue
+        kennung = dienst_am_tag.get(e["datum"], "")
+        minuten = duration_minutes(e["von"], e["bis"], e["pause"])
+        ausfahrten.append({
+            "id": e.get("id"),
+            "datum": e["datum"],
+            "wochentag": date.fromisoformat(e["datum"]).isoweekday(),
+            "von": e["von"],
+            "bis": e["bis"],
+            "pause": e["pause"],
+            "minuten": minuten,
+            "notiz": e["notiz"],
+            "projekt": e["projekt"],
+            "dienstart": kennung,
+            "dienst": namen.get(kennung, "") if kennung else "",
+        })
+        if kennung in dienste:
+            dienste[kennung]["ausfahrten"] += 1
+            dienste[kennung]["ausfahrt_minuten"] += minuten
+    ausfahrten.sort(key=lambda a: (a["datum"], a["von"]))
 
     return {
         "von": von,
@@ -536,6 +701,11 @@ def compute(entries, settings, von, bis):
         "ist": ist_gesamt,
         "dienste": [{"id": k, "name": namen.get(k, k or "Dienst"), **v}
                     for k, v in sorted(dienste.items(), key=lambda kv: -kv[1]["minuten"])],
+        "ausfahrten": ausfahrten,
+        # Beides wird gesondert verrechnet und ist in 'erfasst' und 'saldo'
+        # bewusst nicht enthalten.
+        "pauschale": pauschale_gesamt,
+        "ausfahrt": ausfahrt_gesamt,
         "gutschrift": gutschrift_gesamt,
         "erfasst": ist_gesamt + gutschrift_gesamt,
         "soll": soll_gesamt,
@@ -649,34 +819,50 @@ def feiertage_eintragen(store, jahr):
             "tage": neu, "details": uebersprungen}
 
 
-def dienst_eintragen(store, dienstart, von, bis, gutschrift=None):
-    """Legt fuer jeden Tag im Zeitraum einen Diensteintrag an (z. B. Notdienstwoche)."""
+def dienst_eintragen(store, dienstart, von, bis=None, gutschrift=None):
+    """Legt die Diensttage an.
+
+    Hat die Dienstart einen Wochenrhythmus hinterlegt, ergeben sich Anfang, Ende
+    und die Minuten je Tag aus ihrer Definition; 'bis' wird dann nicht gebraucht.
+    Andernfalls bekommt jeder Tag im Zeitraum die feste Pauschale.
+    """
     settings = store.get_settings()
     arten = {a["id"]: a for a in (settings.get("dienstarten") or [])}
     if dienstart not in arten:
         raise ValueError("Unbekannte Dienstart '%s'." % dienstart)
     art = arten[dienstart]
-    d_von, d_bis = date.fromisoformat(von), date.fromisoformat(bis)
-    if (d_bis - d_von).days > 366:
-        raise ValueError("Ein Dienstzeitraum darf hoechstens ein Jahr umfassen.")
 
-    schon = {e["datum"] for e in store.list_entries(von, bis)
+    if art.get("modus"):
+        plan = dienst_tage(art, von)
+        if not plan:
+            raise ValueError("'%s' ergibt keine Dienstzeit." % art["name"])
+    else:
+        d_von = date.fromisoformat(von)
+        d_bis = date.fromisoformat(bis or von)
+        if d_bis < d_von:
+            raise ValueError("Das Ende des Zeitraums liegt vor dem Anfang.")
+        if (d_bis - d_von).days > 366:
+            raise ValueError("Ein Dienstzeitraum darf hoechstens ein Jahr umfassen.")
+        fest = int(art.get("pauschale") or 0) if gutschrift is None else int(gutschrift)
+        plan = [(d.isoformat(), fest) for d in daterange(d_von, d_bis)]
+
+    if gutschrift is not None and art.get("modus"):
+        plan = [(d, int(gutschrift)) for d, _ in plan]
+
+    erster, letzter = plan[0][0], plan[-1][0]
+    schon = {e["datum"] for e in store.list_entries(erster, letzter)
              if e["typ"] == "dienst" and e.get("dienstart") == dienstart}
-    neu = []
-    d = d_von
-    while d <= d_bis:
-        if d.isoformat() not in schon:
-            neu.append(clean_entry({
-                "datum": d.isoformat(), "typ": "dienst", "dienstart": dienstart,
-                "gutschrift": art["pauschale"] if gutschrift is None else gutschrift,
-                "notiz": art["name"],
-            }, arten))
-        d += timedelta(days=1)
+    neu = [clean_entry({
+        "datum": d, "typ": "dienst", "dienstart": dienstart,
+        "gutschrift": minuten, "notiz": art["name"],
+    }, arten) for d, minuten in plan if d not in schon]
     if neu:
         store.add_many(neu)
     return {"dienstart": dienstart, "name": art["name"], "angelegt": len(neu),
-            "uebersprungen": (d_bis - d_von).days + 1 - len(neu),
-            "minuten": sum(e["gutschrift"] or 0 for e in neu)}
+            "von": erster, "bis": letzter,
+            "uebersprungen": len(plan) - len(neu),
+            "minuten": sum(e["gutschrift"] or 0 for e in neu),
+            "pauschale": sum(m for _, m in plan)}
 
 
 def arbeitstage_auffuellen(store, von, bis):
@@ -689,9 +875,10 @@ def arbeitstage_auffuellen(store, von, bis):
     startdatum = settings.get("startdatum") or ""
     d_start = date.fromisoformat(startdatum) if startdatum else None
 
-    # Reine Diensttage bleiben offen: waehrend einer Notdienstwoche wird ja
-    # trotzdem normal gearbeitet.
-    belegt = {e["datum"] for e in store.list_entries(von, bis) if e["typ"] != "dienst"}
+    # Diensttage und Ausfahrten bleiben offen: waehrend eines Dienstes wird ja
+    # trotzdem normal gearbeitet, und beides wird gesondert verrechnet.
+    belegt = {e["datum"] for e in store.list_entries(von, bis)
+              if e["typ"] not in SEPARATE_TYPES}
     feiertage = set()
     for jahr in range(d_von.year, d_bis.year + 1):
         for f in feiertage_at(jahr, settings.get("sondertage", "keine")):
@@ -775,10 +962,13 @@ def export_csv(store, von=None, bis=None):
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
     w.writerow(["Datum", "Wochentag", "Art", "Dienst", "Von", "Bis", "Pause (Min)",
-                "Dauer (h)", "Soll (h)", "Projekt", "Notiz"])
+                "Dauer (h)", "Soll (h)", "Verrechnung", "Projekt", "Notiz"])
     wtage = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
     soll_map = {int(k): float(v) for k, v in settings["soll"].items()}
     dienstnamen = {a["id"]: a["name"] for a in (settings.get("dienstarten") or [])}
+    # Ausfahrten haben keine eigene Dienstart, sie gehoeren zum Dienst des Tages.
+    dienst_am_tag = {e["datum"]: (e.get("dienstart") or "")
+                     for e in entries if e["typ"] == "dienst"}
     gesehen = set()
     for e in entries:
         d = date.fromisoformat(e["datum"])
@@ -787,6 +977,8 @@ def export_csv(store, von=None, bis=None):
             minuten = duration_minutes(e["von"], e["bis"], e["pause"])
         elif e["typ"] == "dienst":
             minuten = int(e.get("gutschrift") or 0)
+        elif e["typ"] == "ausfahrt":
+            minuten = duration_minutes(e["von"], e["bis"], e["pause"])
         elif e.get("gutschrift") is not None:
             minuten = int(e["gutschrift"])
         elif e["von"] and e["bis"]:
@@ -794,12 +986,15 @@ def export_csv(store, von=None, bis=None):
         else:
             minuten = int(round(soll_map.get(d.isoweekday(), 0.0) * 60))
         soll = soll_map.get(d.isoweekday(), 0.0)
+        kennung = e.get("dienstart") or (dienst_am_tag.get(e["datum"], "")
+                                         if e["typ"] == "ausfahrt" else "")
         w.writerow([
             e["datum"], wtage[d.isoweekday() - 1], e["typ"].capitalize(),
-            dienstnamen.get(e.get("dienstart") or "", ""),
+            dienstnamen.get(kennung, ""),
             e["von"], e["bis"], e["pause"],
             ("%.2f" % (minuten / 60)).replace(".", ","),
             ("%.2f" % soll).replace(".", ",") if e["datum"] not in gesehen else "",
+            "gesondert" if e["typ"] in SEPARATE_TYPES else "Arbeitszeit",
             e["projekt"], e["notiz"],
         ])
         gesehen.add(e["datum"])
@@ -974,7 +1169,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/eintraege":
             return self._json(self.store.list_entries(q.get("von"), q.get("bis")))
         if path == "/api/einstellungen":
-            return self._json(self.store.get_settings())
+            return self._json(mit_dauer(self.store.get_settings()))
         if path == "/api/auswertung":
             von = q.get("von") or date.today().replace(day=1).isoformat()
             bis = q.get("bis") or date.today().isoformat()
@@ -1017,13 +1212,14 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/dienste":
             body = self._body()
             von = (body.get("von") or "").strip()
-            bis = (body.get("bis") or von).strip()
-            if not (DATE_RE.match(von) and DATE_RE.match(bis)):
+            # 'bis' braucht nur, wer eine Dienstart ohne Wochenrhythmus nutzt.
+            bis = (body.get("bis") or "").strip()
+            if not DATE_RE.match(von) or (bis and not DATE_RE.match(bis)):
                 raise ValueError("Zeitraum bitte als JJJJ-MM-TT angeben.")
-            if bis < von:
+            if bis and bis < von:
                 raise ValueError("Das Ende des Zeitraums liegt vor dem Anfang.")
             return self._json(dienst_eintragen(
-                self.store, (body.get("dienstart") or "").strip(), von, bis,
+                self.store, (body.get("dienstart") or "").strip(), von, bis or None,
                 body.get("gutschrift")))
         if method == "PUT" and m:
             e = clean_entry(self._body(), arten)
@@ -1035,7 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error("Eintrag nicht gefunden.", 404)
             return self._json({"ok": True})
         if method == "PUT" and path == "/api/einstellungen":
-            return self._json(self.store.save_settings(self._body()))
+            return self._json(mit_dauer(self.store.save_settings(self._body())))
         if method == "POST" and path == "/api/feiertage":
             body = self._body()
             jahr = body.get("jahr") or date.today().year

@@ -10,8 +10,11 @@
 const LOKAL = (() => {
 
 const DB_NAME = "zeiterfassung", DB_VERSION = 1;
-const ENTRY_TYPES = ["arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst"];
+const ENTRY_TYPES = ["arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst", "ausfahrt"];
+// Gesondert verrechnet, also nie in Ist, Saldo oder Überstunden:
+const SEPARATE_TYPES = ["dienst", "ausfahrt"];
 const SONDERTAGE_MODI = ["keine", "halb", "ganz"];
+const DIENST_MODI = ["durchgehend", "taeglich"];
 const WOCHENTAGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{1,2}:\d{2}$/;
@@ -24,7 +27,16 @@ const STANDARD = () => ({
     "5": {von:"08:00", bis:"16:30", pause:30}, "6": null, "7": null,
   },
   sondertage: "keine",
-  dienstarten: [{id:"notdienstwoche", name:"Notdienstwoche", pauschale:120, farbe:"#b45309"}],
+  // Wochenrhythmus je Dienst; die Dauer ist eine Zeitpauschale und wird
+  // gesondert verrechnet, zählt also nie als Arbeitszeit.
+  dienstarten: [
+    {id:"dienst-1", name:"1. Dienst", modus:"durchgehend",
+     starttag:1, startzeit:"07:00", endtag:1, endzeit:"07:00", pauschale:0, farbe:"#b45309"},
+    {id:"dienst-2", name:"2. Dienst", modus:"taeglich",
+     starttag:1, startzeit:"07:00", endtag:6, endzeit:"20:00", pauschale:0, farbe:"#0f766e"},
+    {id:"dienst-3", name:"3. Dienst", modus:"taeglich",
+     starttag:5, startzeit:"07:00", endtag:6, endzeit:"20:00", pauschale:0, farbe:"#6d28d9"},
+  ],
   startsaldo: 0, startdatum: "", name: "",
 });
 
@@ -130,7 +142,30 @@ async function saveSettings(patch){
       if (!isFinite(pauschale) || pauschale < 0 || pauschale > 1440)
         throw new Fehler(`Pauschale von „${name}" muss zwischen 0 und 1440 Minuten liegen.`);
       const farbe = /^#[0-9a-fA-F]{6}$/.test(roh.farbe || "") ? roh.farbe : "#b45309";
-      arten.push({id: kennung, name, pauschale, farbe});
+      const art = {id: kennung, name, pauschale, farbe};
+
+      // Wochenrhythmus ist freiwillig; ohne ihn bleibt es bei der festen
+      // Pauschale je Tag.
+      const modus = String(roh.modus || "").trim().toLowerCase();
+      if (modus){
+        if (!DIENST_MODI.includes(modus))
+          throw new Fehler(`Modus von „${name}" muss 'durchgehend' oder 'taeglich' sein.`);
+        const starttag = Math.trunc(Number(roh.starttag) || 0);
+        const endtag = Math.trunc(Number(roh.endtag) || 0);
+        if (!(starttag >= 1 && starttag <= 7 && endtag >= 1 && endtag <= 7))
+          throw new Fehler(`Start- und Endtag von „${name}" müssen zwischen 1 (Montag) `
+            + "und 7 (Sonntag) liegen.");
+        for (const [feld, wert] of [["startzeit", roh.startzeit], ["endzeit", roh.endzeit]]){
+          if (!TIME_RE.test(String(wert || "")))
+            throw new Fehler(`${feld} von „${name}" muss im Format HH:MM sein.`);
+          parseZeit(String(wert));
+        }
+        Object.assign(art, {modus, starttag, endtag,
+          startzeit: String(roh.startzeit), endzeit: String(roh.endzeit)});
+        if (!dienstTage(art, "2024-01-01").length)
+          throw new Fehler(`„${name}" ergibt keine Dienstzeit.`);
+      }
+      arten.push(art);
     }
     current.dienstarten = arten;
   }
@@ -181,6 +216,68 @@ function isoVon(d){
 function plusTage(iso, n){ const d = tagAus(iso); d.setDate(d.getDate() + n); return isoVon(d); }
 function heuteIso(){ return isoVon(new Date()); }
 
+// Legt den Beginn eines Dienstes auf den Starttag der Dienstart: genommen wird
+// der letzte passende Wochentag, der nicht nach 'datum' liegt.
+function dienstStart(art, datum){
+  const starttag = Math.trunc(Number(art.starttag) || 0);
+  if (!(starttag >= 1 && starttag <= 7)) return datum;
+  return plusTage(datum, -((isoWochentag(datum) - starttag + 7) % 7));
+}
+
+// Liefert [[datum, minuten], ...] - den Anteil der Zeitpauschale je Kalendertag.
+// Ohne Wochenrhythmus bleibt es bei einem Tag mit der festen Pauschale.
+function dienstTage(art, datum){
+  const d0 = dienstStart(art, datum);
+  const modus = String(art.modus || "").trim().toLowerCase();
+  const starttag = Math.trunc(Number(art.starttag) || 0);
+  const endtag = Math.trunc(Number(art.endtag) || 0);
+  if (!DIENST_MODI.includes(modus) || !(starttag >= 1 && starttag <= 7
+      && endtag >= 1 && endtag <= 7))
+    return [[d0, Math.trunc(Number(art.pauschale) || 0)]];
+
+  const beginn = parseZeit(art.startzeit || "00:00");
+  const ende = parseZeit(art.endzeit || "00:00");
+
+  if (modus === "taeglich"){
+    // An jedem Tag dasselbe Zeitfenster, z. B. Montag bis Samstag 07:00-20:00.
+    let laenge = ende - beginn;
+    if (laenge <= 0) laenge += 24 * 60;
+    const anzahl = (endtag - starttag + 7) % 7 + 1;
+    return Array.from({length: anzahl}, (_, i) => [plusTage(d0, i), laenge]);
+  }
+
+  // durchgehend, z. B. Montag 07:00 bis Montag 07:00: erster und letzter
+  // Kalendertag sind angebrochen, die dazwischen zählen voll.
+  let spanne = (endtag - starttag + 7) % 7;
+  if (spanne === 0 && ende <= beginn) spanne = 7;   // gleicher Wochentag = volle Woche
+  let rest = spanne * 24 * 60 + (ende - beginn);
+  if (rest <= 0) return [];
+  const tage = [];
+  let tag = 0, platz = 24 * 60 - beginn;
+  while (rest > 0){
+    const anteil = Math.min(platz, rest);
+    tage.push([plusTage(d0, tag), anteil]);
+    rest -= anteil;
+    tag += 1;
+    platz = 24 * 60;
+  }
+  return tage;
+}
+
+// Gesamte Zeitpauschale einer Dienstart in Minuten. Das Ergebnis hängt nur an
+// der Definition, das Bezugsdatum ist beliebig.
+function dienstPauschale(art){
+  return dienstTage(art, "2024-01-01").reduce((s, [, m]) => s + m, 0);
+}
+
+// Einstellungen für die Anzeige: jede Dienstart bekommt ihre Gesamtdauer und
+// die Zahl der Kalendertage. So muss die Oberfläche nichts selbst rechnen und
+// zeigt in beiden Betriebsarten dieselbe Zahl.
+function mitDauer(settings){
+  return {...settings, dienstarten: (settings.dienstarten || []).map(a =>
+    ({...a, dauer: dienstPauschale(a), tage: dienstTage(a, "2024-01-01").length}))};
+}
+
 function pruefeEintrag(roh, dienstarten){
   const datum = String(roh.datum || "").trim();
   if (!DATE_RE.test(datum)) throw new Fehler("Bitte ein gültiges Datum angeben (JJJJ-MM-TT).");
@@ -214,8 +311,10 @@ function pruefeEintrag(roh, dienstarten){
     if (gutschrift === null) gutschrift = 0;
   } else dienstart = "";
 
-  if (typ === "arbeit"){
-    if (!von || !bis) throw new Fehler("Bei Arbeitszeit sind 'Von' und 'Bis' nötig.");
+  if (typ === "arbeit" || typ === "ausfahrt"){
+    if (!von || !bis)
+      throw new Fehler(typ === "ausfahrt" ? "Bei einer Ausfahrt sind 'Von' und 'Bis' nötig."
+                                          : "Bei Arbeitszeit sind 'Von' und 'Bis' nötig.");
     if (dauerMinuten(von, bis, pause) < 0)
       throw new Fehler("Die Pause ist länger als die erfasste Zeitspanne.");
     gutschrift = null;
@@ -272,12 +371,16 @@ function berechne(entries, settings, von, bis){
 
   const tage = {};
   for (const e of entries){
-    const t = tage[e.datum] || (tage[e.datum] = {ist:0, gutschrift:0, typen:[], eintraege:[]});
+    const t = tage[e.datum] || (tage[e.datum] =
+      {ist:0, gutschrift:0, pauschale:0, ausfahrt:0, typen:[], eintraege:[]});
     let minuten = 0;
     if (e.typ === "arbeit"){
       minuten = dauerMinuten(e.von, e.bis, e.pause); t.ist += minuten;
     } else if (e.typ === "dienst"){
-      minuten = Math.trunc(e.gutschrift || 0); t.gutschrift += minuten;
+      // Zeitpauschale des Dienstes: gesondert verrechnet, nie im Saldo.
+      minuten = Math.trunc(e.gutschrift || 0); t.pauschale += minuten;
+    } else if (e.typ === "ausfahrt"){
+      minuten = dauerMinuten(e.von, e.bis, e.pause); t.ausfahrt += minuten;
     } else if (e.gutschrift != null){
       minuten = Math.trunc(e.gutschrift); t.gutschrift += minuten;
     } else if (e.von && e.bis){
@@ -298,8 +401,11 @@ function berechne(entries, settings, von, bis){
     sollGesamt += Math.round(sollMap[isoWochentag(d)] * 60);
   }
 
-  let ist = 0, gut = 0;
-  for (const [d, t] of Object.entries(tage)) if (zaehlt(d)){ ist += t.ist; gut += t.gutschrift; }
+  let ist = 0, gut = 0, pauschaleGesamt = 0, ausfahrtGesamt = 0;
+  for (const [d, t] of Object.entries(tage)) if (zaehlt(d)){
+    ist += t.ist; gut += t.gutschrift;
+    pauschaleGesamt += t.pauschale; ausfahrtGesamt += t.ausfahrt;
+  }
 
   const projekte = {};
   for (const e of entries){
@@ -310,25 +416,50 @@ function berechne(entries, settings, von, bis){
 
   const namen = {};
   for (const a of (settings.dienstarten || [])) namen[a.id] = a.name;
+  // Welcher Dienst läuft an welchem Tag? Damit bekommt jede Ausfahrt ihren
+  // Dienst zugeordnet, ohne dass er am Eintrag mitgeführt werden muss.
+  const dienstAmTag = {};
+  for (const e of entries) if (e.typ === "dienst") dienstAmTag[e.datum] = e.dienstart || "";
+
   const dienste = {};
   for (const e of entries){
     if (e.typ !== "dienst" || !zaehlt(e.datum)) continue;
-    const d = dienste[e.dienstart || ""] || (dienste[e.dienstart || ""] = {tage:0, minuten:0});
+    const d = dienste[e.dienstart || ""] || (dienste[e.dienstart || ""] =
+      {tage:0, minuten:0, ausfahrten:0, ausfahrt_minuten:0});
     d.tage += 1; d.minuten += Math.trunc(e.gutschrift || 0);
   }
+
+  const ausfahrten = [];
+  for (const e of entries){
+    if (e.typ !== "ausfahrt" || !zaehlt(e.datum)) continue;
+    const kennung = dienstAmTag[e.datum] || "";
+    const minuten = dauerMinuten(e.von, e.bis, e.pause);
+    ausfahrten.push({id: e.id, datum: e.datum, wochentag: isoWochentag(e.datum),
+      von: e.von, bis: e.bis, pause: e.pause, minuten, notiz: e.notiz,
+      projekt: e.projekt, dienstart: kennung,
+      dienst: kennung ? (namen[kennung] || "") : ""});
+    if (dienste[kennung]){
+      dienste[kennung].ausfahrten += 1;
+      dienste[kennung].ausfahrt_minuten += minuten;
+    }
+  }
+  ausfahrten.sort((a, b) => a.datum.localeCompare(b.datum) || a.von.localeCompare(b.von));
 
   const tagesliste = Object.keys(tage).sort().map(d => {
     const t = tage[d], wd = isoWochentag(d);
     let tSoll = Math.round(sollMap[wd] * 60);
     let saldo = t.ist + t.gutschrift - tSoll;
     if (!zaehlt(d)){ tSoll = 0; saldo = 0; }
-    return {datum:d, wochentag:wd, ist:t.ist, gutschrift:t.gutschrift, soll:tSoll,
+    return {datum:d, wochentag:wd, ist:t.ist, gutschrift:t.gutschrift,
+            pauschale:t.pauschale, ausfahrt:t.ausfahrt, soll:tSoll,
             saldo, typen:t.typen, eintraege:t.eintraege};
   });
 
   return {
     von, bis, ist, gutschrift: gut, erfasst: ist + gut, soll: sollGesamt,
     saldo: ist + gut - sollGesamt, tage: tagesliste,
+    // Beides wird gesondert verrechnet und steckt bewusst nicht in erfasst/saldo.
+    pauschale: pauschaleGesamt, ausfahrt: ausfahrtGesamt, ausfahrten,
     dienste: Object.entries(dienste).sort((a,b) => b[1].minuten - a[1].minuten)
       .map(([k, v]) => ({id:k, name: namen[k] || k || "Dienst", ...v})),
     projekte: Object.entries(projekte).sort((a,b) => b[1] - a[1])
@@ -405,30 +536,48 @@ async function feiertageEintragen(jahr){
   return {jahr, angelegt: neu.length, uebersprungen, tage: neu};
 }
 
+// Hat die Dienstart einen Wochenrhythmus, ergeben sich Anfang, Ende und die
+// Minuten je Tag aus ihrer Definition; 'bis' wird dann nicht gebraucht.
 async function dienstEintragen(dienstart, von, bis, gutschrift){
   const settings = await getSettings();
   const arten = Object.fromEntries((settings.dienstarten || []).map(a => [a.id, a]));
   if (!arten[dienstart]) throw new Fehler(`Unbekannte Dienstart '${dienstart}'.`);
   const art = arten[dienstart];
-  const vorhanden = new Set((await alleEintraege(von, bis))
-    .filter(e => e.typ === "dienst" && e.dienstart === dienstart).map(e => e.datum));
-  const neu = [];
-  let tage = 0;
-  for (let d = von; d <= bis; d = plusTage(d, 1)){
-    tage++;
-    if (!vorhanden.has(d)) neu.push(pruefeEintrag({
-      datum: d, typ: "dienst", dienstart,
-      gutschrift: gutschrift == null ? art.pauschale : gutschrift, notiz: art.name}, arten));
+
+  let plan;
+  if (art.modus){
+    plan = dienstTage(art, von);
+    if (!plan.length) throw new Fehler(`„${art.name}" ergibt keine Dienstzeit.`);
+    if (gutschrift != null) plan = plan.map(([d]) => [d, Math.trunc(gutschrift)]);
+  } else {
+    const ende = bis || von;
+    if (ende < von) throw new Fehler("Das Ende des Zeitraums liegt vor dem Anfang.");
+    const fest = gutschrift == null ? Math.trunc(Number(art.pauschale) || 0)
+                                    : Math.trunc(gutschrift);
+    plan = [];
+    for (let d = von; d <= ende; d = plusTage(d, 1)) plan.push([d, fest]);
   }
+
+  const erster = plan[0][0], letzter = plan[plan.length - 1][0];
+  const vorhanden = new Set((await alleEintraege(erster, letzter))
+    .filter(e => e.typ === "dienst" && e.dienstart === dienstart).map(e => e.datum));
+  const neu = plan.filter(([d]) => !vorhanden.has(d)).map(([d, minuten]) =>
+    pruefeEintrag({datum: d, typ: "dienst", dienstart,
+                   gutschrift: minuten, notiz: art.name}, arten));
   await anlegen(neu);
-  return {dienstart, name: art.name, angelegt: neu.length, uebersprungen: tage - neu.length,
-          minuten: neu.reduce((s, e) => s + (e.gutschrift || 0), 0)};
+  return {dienstart, name: art.name, angelegt: neu.length, von: erster, bis: letzter,
+          uebersprungen: plan.length - neu.length,
+          minuten: neu.reduce((s, e) => s + (e.gutschrift || 0), 0),
+          pauschale: plan.reduce((s, [, m]) => s + m, 0)};
 }
 
 async function auffuellen(von, bis){
   const settings = await getSettings();
   const bisEcht = [bis, heuteIso()].sort()[0];
-  const belegt = new Set((await alleEintraege(von, bis)).filter(e => e.typ !== "dienst")
+  // Diensttage und Ausfahrten blockieren nicht: sie werden gesondert verrechnet,
+  // gearbeitet wird an diesen Tagen ja trotzdem.
+  const belegt = new Set((await alleEintraege(von, bis))
+    .filter(e => !SEPARATE_TYPES.includes(e.typ))
     .map(e => e.datum));
   const feiertage = new Set();
   for (let j = Number(von.slice(0,4)); j <= Number(bisEcht.slice(0,4)); j++)
@@ -493,21 +642,27 @@ function csvExport(entries, settings){
   const wtage = ["Mo","Di","Mi","Do","Fr","Sa","So"];
   const namen = Object.fromEntries((settings.dienstarten || []).map(a => [a.id, a.name]));
   const zeilen = [["Datum","Wochentag","Art","Dienst","Von","Bis","Pause (Min)",
-                   "Dauer (h)","Soll (h)","Projekt","Notiz"]];
+                   "Dauer (h)","Soll (h)","Verrechnung","Projekt","Notiz"]];
+  // Ausfahrten haben keine eigene Dienstart, sie gehören zum Dienst des Tages.
+  const dienstAmTag = {};
+  for (const e of entries) if (e.typ === "dienst") dienstAmTag[e.datum] = e.dienstart || "";
   const gesehen = new Set();
   for (const e of entries){
     const wd = isoWochentag(e.datum);
     let minuten;
     if (e.typ === "arbeit") minuten = dauerMinuten(e.von, e.bis, e.pause);
     else if (e.typ === "dienst") minuten = Math.trunc(e.gutschrift || 0);
+    else if (e.typ === "ausfahrt") minuten = dauerMinuten(e.von, e.bis, e.pause);
     else if (e.gutschrift != null) minuten = Math.trunc(e.gutschrift);
     else if (e.von && e.bis) minuten = dauerMinuten(e.von, e.bis, e.pause);
     else minuten = Math.round(Number(settings.soll[String(wd)] || 0) * 60);
     const soll = Number(settings.soll[String(wd)] || 0);
+    const kennung = e.dienstart || (e.typ === "ausfahrt" ? (dienstAmTag[e.datum] || "") : "");
     zeilen.push([e.datum, wtage[wd-1], e.typ.charAt(0).toUpperCase() + e.typ.slice(1),
-      namen[e.dienstart] || "", e.von, e.bis, e.pause,
+      namen[kennung] || "", e.von, e.bis, e.pause,
       (minuten/60).toFixed(2).replace(".", ","),
       gesehen.has(e.datum) ? "" : soll.toFixed(2).replace(".", ","),
+      SEPARATE_TYPES.includes(e.typ) ? "gesondert" : "Arbeitszeit",
       e.projekt, e.notiz]);
     gesehen.add(e.datum);
   }
@@ -548,7 +703,9 @@ async function ruf(pfad, opts = {}){
     await tx(["eintraege"], "readwrite", t => t.objectStore("eintraege").delete(id));
     return {ok: true};
   }
-  if (weg === "/api/einstellungen") return methode === "GET" ? settings : saveSettings(body);
+  if (weg === "/api/einstellungen")
+    return methode === "GET" ? mitDauer(settings)
+                             : saveSettings(body).then(mitDauer);
   if (weg === "/api/auswertung")
     return auswertung(q.von || heuteIso().slice(0,8) + "01", q.bis || heuteIso());
   if (weg === "/api/feiertage" && methode === "GET"){
@@ -564,11 +721,14 @@ async function ruf(pfad, opts = {}){
     return feiertageEintragen(jahr);
   }
   if (weg === "/api/dienste" && methode === "POST"){
-    const von = String(body.von || "").trim(), bis = String(body.bis || body.von || "").trim();
-    if (!DATE_RE.test(von) || !DATE_RE.test(bis))
+    const von = String(body.von || "").trim();
+    // 'bis' braucht nur, wer eine Dienstart ohne Wochenrhythmus nutzt.
+    const bis = String(body.bis || "").trim();
+    if (!DATE_RE.test(von) || (bis && !DATE_RE.test(bis)))
       throw new Fehler("Zeitraum bitte als JJJJ-MM-TT angeben.");
-    if (bis < von) throw new Fehler("Das Ende des Zeitraums liegt vor dem Anfang.");
-    return dienstEintragen(String(body.dienstart || "").trim(), von, bis, body.gutschrift);
+    if (bis && bis < von) throw new Fehler("Das Ende des Zeitraums liegt vor dem Anfang.");
+    return dienstEintragen(String(body.dienstart || "").trim(), von, bis || null,
+                           body.gutschrift);
   }
   if (weg === "/api/auffuellen" && methode === "POST"){
     const von = String(body.von || "").trim(), bis = String(body.bis || "").trim();

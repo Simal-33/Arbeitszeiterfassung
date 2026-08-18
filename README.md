@@ -94,23 +94,42 @@ Im Bereich „Feiertage & Standardtage“ wählst du ein Jahr und trägst mit ei
 Feiertage ein, die auf einen Arbeitstag fallen. Bereits erfasste Tage bleiben unangetastet,
 mehrfaches Klicken legt also nichts doppelt an.
 
-## Dienste und Notdienstwochen
+## Notdienst, Pauschalen und Ausfahrten
 
-Unter Einstellungen legst du beliebig viele Dienstarten an – Name, Pauschale in Minuten je
-Diensttag und eine Farbe. Beispiele: „Notdienstwoche" mit 120 Minuten, „Wochenenddienst" mit
-240 Minuten.
+Die Zeit eines Notdienstes ist eine **zeitliche Pauschale**. Sie wird gesondert verrechnet
+und fließt deshalb **nicht** in Ist, Saldo oder Überstunden ein – sie steht in eigenen
+Kacheln und einem eigenen Abschnitt. Dasselbe gilt für Ausfahrten während eines Dienstes.
 
-- Im Bereich **Dienst eintragen** wählst du die Art und einen Zeitraum. „ganze Woche" springt
-  auf Montag bis Sonntag der gewählten Woche. Ein Klick legt für jeden Tag einen Eintrag mit
-  der Pauschale an; ein zweiter Klick auf denselben Zeitraum legt nichts doppelt an.
-- Einzelne Diensttage gehen genauso über das normale Formular mit der Art
-  „Dienst / Rufbereitschaft". Die Pauschale ist dort vorbelegt und pro Eintrag änderbar.
-- **Tatsächliche Einsätze werden zusätzlich als normale Arbeitszeit erfasst** – auch nachts
-  über Mitternacht. Beides zählt: Pauschale als Gutschrift, Einsatz als Ist-Zeit.
-- Diensttage blockieren das Auffüllen nicht: Während einer Notdienstwoche wird ja weiterhin
-  normal gearbeitet, „Arbeitstage auffüllen" trägt diese Zeiten also weiterhin ein.
-- Der Abschnitt **Dienste im Zeitraum** zeigt je Dienstart die Anzahl der Tage und die
-  Summe der Pauschalen – praktisch für die Abrechnung von Zulagen.
+Voreingestellt sind drei Dienste:
+
+| Dienst | Zeitraum | Pauschale |
+|---|---|---|
+| 1. Dienst | Montag 07:00 bis Montag 07:00, durchgehend | 168:00 h |
+| 2. Dienst | Montag bis Samstag, je 07:00–20:00 | 78:00 h |
+| 3. Dienst | Freitag bis Samstag, je 07:00–20:00 | 26:00 h |
+
+- Unter Einstellungen ist je Dienstart ein Wochenrhythmus hinterlegt: Starttag und -zeit,
+  Endtag und -zeit sowie die Art des Fensters. *durchgehend* läuft ohne Unterbrechung vom
+  Anfang bis zum Ende, *täglich im Zeitfenster* gilt an jedem Tag der Spanne zwischen den
+  beiden Uhrzeiten. Die Gesamtpauschale rechnet das Programm daraus selbst aus.
+- Wer keinen Rhythmus braucht, stellt *fester Wert je Tag* ein und gibt wie bisher Minuten
+  je Diensttag an. Dann wird zusätzlich ein Enddatum abgefragt.
+- Im Bereich **Dienst eintragen** genügen Dienstart und ein Datum. Der Beginn rutscht
+  automatisch auf den Starttag der Dienstart, eine Zeile darunter steht der genaue Zeitraum
+  vor dem Anlegen. Ein zweiter Klick legt nichts doppelt an.
+- Die Pauschale wird auf die Kalendertage aufgeteilt, angebrochene Tage anteilig: beim
+  1. Dienst also 17:00 h am ersten Montag, 24:00 h an den sechs Tagen dazwischen und
+  07:00 h am letzten Montag.
+- **Ausfahrten** erfasst du über das normale Formular mit der Art „Ausfahrt im Dienst“,
+  mit Von und Bis wie bei Arbeitszeit – auch über Mitternacht. Den Dienst bekommt jede
+  Ausfahrt automatisch von dem Diensttag, an dem sie liegt.
+- Der Abschnitt **Notdienst-Tage mit Ausfahrt** listet sie mit Tag, Dienst, Uhrzeit und
+  Dauer; **Dienste im Zeitraum** zeigt je Dienstart Tage, Pauschale und die Zahl der
+  Ausfahrten – zusammen die Grundlage für die gesonderte Abrechnung.
+- Diensttage und Ausfahrten blockieren das Auffüllen nicht: während eines Dienstes wird
+  ja weiterhin normal gearbeitet, „Arbeitstage auffüllen" trägt diese Zeiten also ein.
+- Im CSV-Export sagt die Spalte **Verrechnung**, ob eine Zeile normale Arbeitszeit ist oder
+  gesondert verrechnet wird.
 
 ## Feste Arbeitstage
 
@@ -176,7 +195,7 @@ werden durch beide geschickt und die Ergebnisse müssen auf die Minute übereins
 | GET | `/api/feiertage?jahr=` | Feiertage des Jahres mit Status |
 | POST | `/api/feiertage` | Feiertage eines Jahres eintragen |
 | POST | `/api/auffuellen` | Offene Arbeitstage mit Standardzeiten füllen |
-| POST | `/api/dienste` | Dienstzeitraum anlegen (z. B. Notdienstwoche) |
+| POST | `/api/dienste` | Dienst anlegen; `bis` nur bei Dienstarten ohne Wochenrhythmus |
 | GET | `/api/export.json` / `/api/export.csv` | Export |
 | POST | `/api/import` | Import |
 
