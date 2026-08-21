@@ -1,0 +1,54 @@
+name: Handy-App veroeffentlichen
+
+# Stellt die Oberflaeche als installierbare Web-App (PWA) auf GitHub Pages bereit.
+# Auf dem Handy laeuft sie ohne Server: die Daten liegen im Browser des Geraets.
+#
+# Einmalig einschalten: Settings -> Pages -> Source: "GitHub Actions".
+# Danach ist die App unter https://<konto>.github.io/<repo>/ erreichbar.
+#
+# Achtung: GitHub Pages ist bei einem privaten Repository nur mit GitHub Pro
+# verfuegbar. Veroeffentlicht wird ohnehin nur der Programmcode - die erfassten
+# Zeiten bleiben auf dem Geraet und werden nie hochgeladen.
+
+on:
+  push:
+    branches: [main]
+    paths: ["static/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  veroeffentlichen:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Vollstaendigkeit pruefen
+        run: |
+          for datei in index.html lokal.js sw.js manifest.webmanifest \
+                       icon.svg icon-192.png icon-512.png icon-180.png; do
+            test -f "static/$datei" || { echo "static/$datei fehlt"; exit 1; }
+          done
+          python3 -c "import json;json.load(open('static/manifest.webmanifest'))"
+          echo "Alle Dateien der Web-App vorhanden."
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: static
+
+      - id: pages
+        uses: actions/deploy-pages@v5

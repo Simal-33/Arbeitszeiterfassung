@@ -26,6 +26,28 @@
 body{margin:0;background:var(--bg);color:var(--text);
      font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 .wrap{max-width:1080px;margin:0 auto;padding:16px 16px 64px}
+.app{display:block}
+nav#nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+nav#nav button{display:flex;align-items:center;gap:8px;border-radius:10px;padding:10px 14px}
+nav#nav button.aktiv{background:var(--accent);border-color:var(--accent);color:#fff}
+nav#nav .zeichen{font-size:16px;line-height:1}
+section[data-ansicht]{display:none}
+section[data-ansicht].sichtbar{display:block}
+@media (min-width:900px){
+  .app{display:grid;grid-template-columns:200px 1fr;gap:24px;align-items:start}
+  nav#nav{position:sticky;top:16px;flex-direction:column;gap:4px;margin:0}
+  nav#nav button{width:100%;justify-content:flex-start}
+}
+@media (max-width:899px){
+  nav#nav{position:fixed;left:0;right:0;bottom:0;z-index:20;margin:0;gap:0;
+          background:var(--panel);border-top:1px solid var(--line);padding:6px 2px;
+          box-shadow:0 -2px 12px rgba(16,24,40,.12)}
+  nav#nav button{flex:1;flex-direction:column;gap:2px;font-size:10px;border:none;
+                 background:none;padding:6px 2px;text-align:center}
+  nav#nav button.aktiv{background:none;color:var(--accent);font-weight:600}
+  nav#nav button .zeichen{font-size:20px}
+  .wrap{padding-bottom:88px}
+}
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;
        padding:14px 0 18px}
 h1{font-size:20px;margin:0;letter-spacing:-.2px}
@@ -70,10 +92,37 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 .week{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:8px}
 .right{margin-left:auto}
 .empty{text-align:center;color:var(--muted);padding:28px 8px}
+@media print{
+  nav#nav, header, .toolbar, .msg, #sicherung, #rueckgaengig, .kpis, form,
+  button{display:none !important}
+  body{background:#fff;color:#000}
+  .app{display:block}
+  section[data-ansicht]{display:none !important}
+  #bericht{display:block !important}
+  .panel{border:none;box-shadow:none;padding:0;margin:0 0 18px}
+  table{font-size:12px}
+  th{border-bottom:1px solid #999}
+  td{border-bottom:1px solid #ddd}
+  tr.we td{background:#f2f2f2}
+  @page{margin:16mm}
+}
+#bericht{display:none}
 @media (max-width:640px){
   th.hide,td.hide{display:none}
   .wrap{padding:12px 12px 56px}
+  /* Am Handy muss die Tabelle in die Breite passen, sonst ist die letzte
+     Spalte mit den Knoepfen nicht erreichbar. */
+  .panel{padding:12px}
+  table{font-size:14px}
+  th{padding:6px 4px;font-size:11px;letter-spacing:0}
+  td{padding:7px 4px}
+  button.icon{padding:5px 7px}
+  td:last-child{white-space:nowrap}
 }
+/* Sicherheitsnetz: breite Tabellen lassen sich seitlich schieben */
+.panel table{max-width:100%}
+#tabelle, #feiertagsListe, #uebersichtListe, #dienstListe, #urlaubListe,
+#projektListe, #heuteListe, #sicherungsListe{overflow-x:auto}
 </style>
 </head>
 <body>
@@ -86,6 +135,7 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   </div>
   <div style="display:flex;gap:8px">
     <button onclick="exportJson()">Sicherung (JSON)</button>
+    <button id="teilenKnopf" onclick="sicherungTeilen()" style="display:none">Teilen</button>
     <button onclick="exportCsv()">CSV</button>
     <button onclick="document.getElementById('importFile').click()">Import</button>
     <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJson(this)">
@@ -93,6 +143,12 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 </header>
 
 <div class="msg" id="msg"></div>
+
+<div id="rueckgaengig" style="display:none;padding:10px 12px;border-radius:8px;margin-bottom:12px;
+     background:var(--soft);font-size:14px;display:none">
+  <span id="rueckgaengigText"></span>
+  <button onclick="stelleWiederHer()" style="margin-left:8px">Rückgängig</button>
+</div>
 
 <div id="sicherung" style="display:none;padding:10px 12px;border-radius:8px;margin-bottom:12px;
      background:rgba(180,83,9,.12);font-size:14px;display:none">
@@ -102,6 +158,50 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <button onclick="document.getElementById('sicherung').style.display='none'">Später</button>
 </div>
 
+<div class="app">
+<nav id="nav">
+  <button data-ziel="stempeln" onclick="zeigeAnsicht('stempeln')">
+    <span class="zeichen">&#9201;</span> <span>Stempeln</span></button>
+  <button data-ziel="erfassen" onclick="zeigeAnsicht('erfassen')">
+    <span class="zeichen">&#9998;</span> <span>Erfassen</span></button>
+  <button data-ziel="uebersicht" onclick="zeigeAnsicht('uebersicht')">
+    <span class="zeichen">&#9776;</span> <span>&Uuml;bersicht</span></button>
+  <button data-ziel="planung" onclick="zeigeAnsicht('planung')">
+    <span class="zeichen">&#9873;</span> <span>Feiertage</span></button>
+  <button data-ziel="einstellungen" onclick="zeigeAnsicht('einstellungen')">
+    <span class="zeichen">&#9881;</span> <span>Einstellungen</span></button>
+</nav>
+
+<div id="inhalt">
+
+<div class="toolbar" id="jobLeiste">
+  <label for="jobWahl" style="margin:0">Job</label>
+  <select id="jobWahl" style="width:auto" onchange="jobWechsel()"></select>
+  <span class="right"></span>
+</div>
+
+<section data-ansicht="stempeln">
+<div class="panel" id="stempelPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+  <button id="stempelKnopf" class="primary" style="font-size:16px;padding:14px 22px;min-width:150px"
+          onclick="stempelUmschalten()">Kommen</button>
+  <div>
+    <div class="value" id="stempelUhr" style="font-size:26px;font-weight:600;
+         font-variant-numeric:tabular-nums">0:00</div>
+    <div class="hint" id="stempelText">Keine laufende Zeitmessung</div>
+  </div>
+  <div class="right" style="display:flex;gap:8px">
+    <button id="stempelPause" onclick="stempelPause()" style="display:none">Pause</button>
+    <button id="stempelWeg" onclick="stempelVerwerfen()" style="display:none">Verwerfen</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Heute erfasst</h2>
+  <div id="heuteListe"></div>
+</div>
+</section>
+
+<section data-ansicht="erfassen uebersicht planung">
 <div class="toolbar">
   <button class="icon" onclick="shiftMonth(-1)" title="Vorheriger Monat">&#8592;</button>
   <input type="month" id="monat" style="width:auto" onchange="setzeMonat()">
@@ -111,7 +211,9 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <input type="date" id="von" style="width:auto" onchange="load()">
   <input type="date" id="bis" style="width:auto" onchange="load()">
 </div>
+</section>
 
+<section data-ansicht="erfassen">
 <div class="kpis">
   <div class="kpi"><div class="label">Ist (gearbeitet)</div><div class="value" id="k-ist">–</div></div>
   <div class="kpi"><div class="label">Gutschrift</div><div class="value" id="k-gut">–</div></div>
@@ -121,14 +223,14 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <div class="kpi"><div class="label">Gesamt&uuml;berstunden</div><div class="value" id="k-gesamt">–</div></div>
   <div class="kpi" id="kpi-pauschale" style="display:none"
        title="Zeitpauschale der Dienste. Wird gesondert verrechnet und ist in Saldo und Überstunden nicht enthalten.">
-    <div class="label">Dienstpauschale</div><div class="value" id="k-pauschale">–</div>
-    <div class="hint" style="font-size:11px">gesondert</div></div>
+    <div class="label">Dienstpauschale</div><div class="value" id="k-pauschale">–</div></div>
   <div class="kpi" id="kpi-ausfahrt" style="display:none"
        title="Ausfahrten während eines Dienstes. Werden gesondert verrechnet und sind in Saldo und Überstunden nicht enthalten.">
-    <div class="label">Ausfahrten</div><div class="value" id="k-ausfahrt">–</div>
-    <div class="hint" style="font-size:11px">gesondert</div></div>
+    <div class="label">Ausfahrten</div><div class="value" id="k-ausfahrt">–</div></div>
 </div>
+</section>
 
+<section data-ansicht="erfassen">
 <div class="panel">
   <h2 id="formTitel">Neuer Eintrag</h2>
   <form id="form" onsubmit="speichern(event)">
@@ -158,11 +260,13 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
                placeholder="17:00" maxlength="5" pattern="[0-9]{1,2}:[0-9]{2}"></div>
       <div><label for="f-pause">Pause (Min)</label><input type="number" id="f-pause" min="0" step="5" value="30"></div>
       <div id="f-gutschrift-wrap" style="display:none">
-        <label for="f-gutschrift">Gutschrift (Min)</label>
-        <input type="number" id="f-gutschrift" min="0" step="30" placeholder="Sollzeit"></div>
+        <label for="f-gutschrift" title="Minuten, die dem Saldo zugerechnet werden. Negativ = Abzug, z. B. ausbezahlte Überstunden.">Gutschrift (Min)</label>
+        <input type="number" id="f-gutschrift" step="15" placeholder="Sollzeit"></div>
       <div><label for="f-projekt">Projekt (optional)</label><input type="text" id="f-projekt" list="projekte" placeholder="z. B. Kunde A"></div>
       <datalist id="projekte"></datalist>
-      <div><label for="f-notiz">Notiz (optional)</label><input type="text" id="f-notiz"></div>
+      <div><label for="f-notiz">Notiz (optional)</label>
+        <input type="text" id="f-notiz" list="notizvorlagen">
+        <datalist id="notizvorlagen"></datalist></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
       <button type="submit" class="primary" id="submitBtn">Speichern</button>
@@ -176,40 +280,26 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <h2>Eintr&auml;ge</h2>
   <div id="tabelle"></div>
 </div>
+</section>
+
+<section data-ansicht="uebersicht">
+<div class="panel" id="uebersichtPanel">
+  <h2>&Uuml;bersicht im Zeitraum</h2>
+  <div id="uebersichtListe"></div>
+</div>
 
 <div class="panel">
-  <h2>Feiertage &amp; Standardtage</h2>
-  <div class="toolbar" style="margin-bottom:12px">
-    <label for="jahr" style="margin:0">Jahr</label>
-    <input type="number" id="jahr" min="1900" max="2200" step="1" style="width:100px"
-           onchange="ladeFeiertage()">
-    <button onclick="setzeJahr(2026)">2026</button>
-    <button onclick="setzeJahr(2027)">2027</button>
-    <button class="primary" onclick="trageFeiertageEin()">Feiertage eintragen</button>
-    <button class="right" onclick="fuelleAuf()">Arbeitstage auff&uuml;llen</button>
-  </div>
-  <div style="margin:0 0 16px;padding:12px;background:var(--soft);border-radius:8px">
-    <div class="toolbar" style="margin:0">
-      <label for="d-art" style="margin:0">Dienst eintragen</label>
-      <select id="d-art" style="width:auto" onchange="dienstVorschau()"></select>
-      <span class="hint">ab</span>
-      <input type="date" id="d-von" style="width:auto" onchange="dienstVorschau()">
-      <span id="d-bis-wrap" style="display:none">
-        <span class="hint">bis</span>
-        <input type="date" id="d-bis" style="width:auto" onchange="dienstVorschau()">
-      </span>
-      <button class="primary" onclick="trageDienstEin()">Dienst anlegen</button>
-    </div>
-    <div class="hint" id="dienstVorschau" style="margin-top:8px"></div>
-  </div>
-  <div id="feiertagsListe"></div>
-  <p class="hint" style="margin-bottom:0">
-    Die 13 gesetzlichen Feiertage nach dem Arbeitsruhegesetz werden im Programm berechnet,
-    also ohne Internetverbindung und f&uuml;r jedes Jahr. Der Karfreitag ist seit 2019 kein
-    allgemeiner Feiertag mehr, Landespatrone sind keine gesetzlichen Ruhetage &ndash; beide
-    fehlen daher bewusst. &bdquo;Arbeitstage auff&uuml;llen&ldquo; tr&auml;gt im gew&auml;hlten
-    Zeitraum alle vergangenen Arbeitstage ohne Eintrag mit deinen Standardzeiten ein.
+  <h2>Bericht</h2>
+  <p class="hint" style="margin:0 0 10px">
+    Erzeugt eine Aufstellung des gewählten Zeitraums zum Ausdrucken. Im Druckdialog lässt sie
+    sich auf jedem Gerät auch als PDF sichern.
   </p>
+  <button class="primary" onclick="berichtDrucken()">Bericht drucken / als PDF</button>
+</div>
+
+<div class="panel" id="urlaubPanel" style="display:none">
+  <h2>Urlaubskonto</h2>
+  <div id="urlaubListe"></div>
 </div>
 
 <div class="panel" id="dienstPanel" style="display:none">
@@ -225,9 +315,9 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <h2>Notdienst-Tage mit Ausfahrt</h2>
   <div id="ausfahrtListe"></div>
   <p class="hint" style="margin-bottom:0">
-    Ausfahrten werden ebenfalls gesondert verrechnet. Erfasst werden sie oben
-    &uuml;ber die Art &bdquo;Ausfahrt im Dienst&ldquo;; den Dienst bekommt jede
-    Ausfahrt automatisch vom Diensttag, an dem sie liegt.
+    Ausfahrten werden ebenfalls gesondert verrechnet. Erfasst werden sie &uuml;ber die
+    Art &bdquo;Ausfahrt im Dienst&ldquo;; den Dienst bekommt jede Ausfahrt automatisch
+    vom Diensttag, an dem sie liegt.
   </p>
 </div>
 
@@ -235,12 +325,57 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
   <h2>Nach Projekt</h2>
   <div id="projektListe"></div>
 </div>
+</section>
 
+<section data-ansicht="planung">
 <div class="panel">
-  <details id="einstellungen">
-    <summary>Einstellungen</summary>
+  <h2>Feiertage &amp; Standardtage</h2>
+  <div class="toolbar" style="margin-bottom:12px">
+    <label for="jahr" style="margin:0">Jahr</label>
+    <input type="number" id="jahr" min="1900" max="2200" step="1" style="width:100px"
+           onchange="ladeFeiertage()">
+    <button onclick="setzeJahr(2026)">2026</button>
+    <button onclick="setzeJahr(2027)">2027</button>
+    <button class="primary" onclick="trageFeiertageEin()">Feiertage eintragen</button>
+    <button class="right" onclick="fuelleAuf()">Arbeitstage auff&uuml;llen</button>
+  </div>
+  <div class="toolbar" style="margin:0 0 16px;padding:12px;background:var(--soft);border-radius:8px">
+    <label for="d-art" style="margin:0">Dienst eintragen</label>
+    <select id="d-art" style="width:auto" onchange="dienstVorschau()"></select>
+    <input type="date" id="d-von" style="width:auto" onchange="dienstVorschau()">
+    <span id="d-bis-wrap" style="display:none">
+      <span class="hint">bis</span>
+      <input type="date" id="d-bis" style="width:auto" onchange="dienstVorschau()">
+      <button onclick="setzeDienstWoche()">ganze Woche</button>
+    </span>
+    <button class="primary" onclick="trageDienstEin()">Dienst anlegen</button>
+  </div>
+  <div class="hint" id="dienstVorschau" style="margin:-8px 0 16px"></div>
+  <div id="feiertagsListe"></div>
+  <p class="hint" style="margin-bottom:0">
+    Die 13 gesetzlichen Feiertage nach dem Arbeitsruhegesetz werden im Programm berechnet,
+    also ohne Internetverbindung und f&uuml;r jedes Jahr. Der Karfreitag ist seit 2019 kein
+    allgemeiner Feiertag mehr, Landespatrone sind keine gesetzlichen Ruhetage &ndash; beide
+    fehlen daher bewusst. &bdquo;Arbeitstage auff&uuml;llen&ldquo; tr&auml;gt im gew&auml;hlten
+    Zeitraum alle vergangenen Arbeitstage ohne Eintrag mit deinen Standardzeiten ein.
+  </p>
+</div>
+</section>
+
+<section data-ansicht="einstellungen">
+<div class="panel">
+  <div id="einstellungen">
+    <h2>Einstellungen</h2>
     <div style="margin-top:16px">
-      <label>Sollstunden je Wochentag</label>
+      <label>Jobs</label>
+      <div id="jobListe"></div>
+      <button type="button" onclick="jobHinzu()" style="margin:8px 0 4px">+ Job</button>
+      <p class="hint" style="margin:0 0 16px">
+        Sollstunden, feste Arbeitszeiten, Startsaldo und Startdatum geh&ouml;ren jeweils zu dem
+        Job, der oben ausgew&auml;hlt ist. Die Auswahl &bdquo;Alle Jobs&ldquo; rechnet alles zusammen.
+      </p>
+
+      <label id="sollLabel">Sollstunden je Wochentag</label>
       <div class="week" id="sollWeek"></div>
 
       <label style="margin-top:18px">Feste Arbeitszeiten je Wochentag (f&uuml;r Vorbelegung und Auff&uuml;llen)</label>
@@ -254,6 +389,35 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
         tr&auml;gst du zus&auml;tzlich als normale Arbeitszeit ein &ndash; beides z&auml;hlt.
       </p>
 
+      <label style="margin-top:18px">Rechnen</label>
+      <div class="grid form-row">
+        <div><label for="s-zeitzone">Zeitzone</label>
+          <select id="s-zeitzone">
+            <option value="Europe/Vienna">Österreich (Europe/Vienna)</option>
+            <option value="Europe/Berlin">Deutschland (Europe/Berlin)</option>
+            <option value="Europe/Zurich">Schweiz (Europe/Zurich)</option>
+            <option value="UTC">ohne Sommerzeit (UTC)</option>
+          </select></div>
+        <div><label for="s-rundung" title="Rundet die Arbeitszeit jedes Eintrags">Rundung</label>
+          <select id="s-rundung">
+            <option value="0">keine (minutengenau)</option>
+            <option value="5">auf 5 Minuten</option>
+            <option value="10">auf 10 Minuten</option>
+            <option value="15">auf 15 Minuten</option>
+            <option value="30">auf 30 Minuten</option>
+          </select></div>
+        <div><label for="s-rundungsmodus">Rundungsrichtung</label>
+          <select id="s-rundungsmodus">
+            <option value="kaufmaennisch">zur nächsten Stufe</option>
+            <option value="auf">immer aufrunden</option>
+            <option value="ab">immer abrunden</option>
+          </select></div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">
+        Die Zeitzone braucht die App nur für die Sommerzeitumstellung: Eine Nachtschicht über
+        die Umstellung ist sonst um eine Stunde falsch.
+      </p>
+
       <div class="grid form-row" style="margin-top:16px">
         <div><label for="s-sondertage">24.12. und 31.12.</label>
           <select id="s-sondertage">
@@ -263,14 +427,19 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
           </select></div>
       </div>
       <div class="grid form-row" style="margin-top:16px">
-        <div><label for="s-startsaldo">Startsaldo (Stunden)</label>
-          <input type="number" id="s-startsaldo" step="0.25" value="0"></div>
+        <div><label for="s-startsaldo" title="Stunden, z. B. 12,5 oder 12:30">Startsaldo (Stunden)</label>
+          <input type="text" inputmode="decimal" id="s-startsaldo" autocomplete="off" value="0"></div>
         <div><label for="s-startdatum">Soll z&auml;hlt ab (optional)</label>
           <input type="date" id="s-startdatum"></div>
         <div><label for="s-name">Name (optional)</label><input type="text" id="s-name"></div>
       </div>
-      <div style="margin-top:12px">
-        <button class="primary" onclick="speichereEinstellungen()">Einstellungen speichern</button>
+      <label style="margin-top:18px">Notizvorlagen</label>
+      <div id="notizListe"></div>
+      <button type="button" onclick="notizHinzu()" style="margin-top:8px">+ Vorlage</button>
+
+      <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="hint" id="speicherStand">Änderungen werden automatisch gespeichert.</span>
+        <button type="button" class="right" onclick="speichereEinstellungen()">Jetzt speichern</button>
       </div>
       <p class="hint" style="margin-top:14px">
         Urlaub, Krankheit, Feiertag und Gleitzeittage werden automatisch mit den Sollstunden
@@ -279,21 +448,54 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
         (praktisch f&uuml;r halbe Urlaubstage).
       </p>
     </div>
-  </details>
+  </div>
 </div>
 
+<div class="panel" style="margin-top:14px">
+  <h2>Sicherung &amp; Speicher</h2>
+  <p class="hint" style="margin:6px 0 12px">
+    Die Daten liegen auf diesem Ger&auml;t. Die App legt automatisch t&auml;glich eine Kopie an
+    und bewahrt die letzten zehn St&auml;nde auf. Eine Sicherungsdatei ausserhalb des
+    Ger&auml;ts ersetzt das nicht &ndash; daf&uuml;r sind &bdquo;Sicherung (JSON)&ldquo; und
+    &bdquo;Teilen&ldquo; oben.
+  </p>
+  <div id="speicherInfo" class="hint" style="margin-bottom:12px">Speicher wird gepr&uuml;ft &hellip;</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+    <button type="button" onclick="sicherungJetzt()">Kopie jetzt anlegen</button>
+    <button type="button" onclick="ladeSicherungen()">Liste aktualisieren</button>
+  </div>
+  <div id="sicherungsListe"></div>
+</div>
+</section>
+
+</div>
+</div>
+
+<div id="bericht"></div>
 </div>
 
 <script src="lokal.js"></script>
 <script>
 const WT = ["Mo","Di","Mi","Do","Fr","Sa","So"];
-const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
-// Arten, die gesondert verrechnet werden und nicht in den Saldo zaehlen:
+// Arten, die gesondert verrechnet werden und nicht in den Saldo zählen
 const GESONDERT = ["dienst", "ausfahrt"];
+const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
 const MONATE = ["Januar","Februar","März","April","Mai","Juni",
                 "Juli","August","September","Oktober","November","Dezember"];
 let settings = null;
 let aktuell = null;
+let jobWahl = "";            // "" oder "alle" = alle Jobs zusammen
+let jobEntwurf = null;       // Arbeitskopie der Jobs, solange die Einstellungen offen sind
+let notizEntwurf = null;
+let stempelZustand = null;
+let stempelTakt = null;
+
+// Der Job, dem neue Eintraege zugeordnet werden
+function schreibJob(){
+  if (jobWahl && jobWahl !== "alle") return jobWahl;
+  return settings?.aktiverJob || (settings?.jobs?.[0]?.id ?? "");
+}
+const jobAnhang = () => `&job=${encodeURIComponent(jobWahl || "alle")}`;
 
 // ---------- Hilfen ----------
 function hm(min, mitVorzeichen){
@@ -305,6 +507,24 @@ function hm(min, mitVorzeichen){
 function klasse(min){ return min > 0 ? "plus" : (min < 0 ? "minus" : ""); }
 function iso(d){ return d.toISOString().slice(0,10); }
 function heute(){ const d = new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return iso(d); }
+// Zahlen aus Textfeldern: akzeptiert 8,25 / 8.25 / 8:15 / leer.
+// Gibt null zurueck, wenn nichts Brauchbares drinsteht - so wird nie
+// stillschweigend eine 0 gespeichert.
+function zahlAus(text){
+  const roh = String(text ?? "").trim().replace(/\s/g, "");
+  if (!roh) return null;
+  const zeit = roh.match(/^(\d{1,2}):(\d{2})$/);             // 8:15 -> 8,25
+  if (zeit && Number(zeit[2]) < 60) return Number(zeit[1]) + Number(zeit[2]) / 60;
+  const zahl = Number(roh.replace(",", "."));
+  return isFinite(zahl) ? zahl : null;
+}
+
+// Deutsche Schreibweise fuers Anzeigen: 8.25 -> "8,25"
+function zahlText(wert){
+  if (wert === null || wert === undefined || wert === "") return "";
+  return String(Number(wert)).replace(".", ",");
+}
+
 function deDatum(isoDatum){ const [j,m,t] = isoDatum.split("-"); return `${t}.${m}.${j}`; }
 function wochentag(isoDatum){
   const d = new Date(isoDatum + "T00:00:00");
@@ -373,9 +593,11 @@ async function load(){
   const bis = document.getElementById("bis").value;
   if (!von || !bis) return;
   try {
-    aktuell = await api(`/api/auswertung?von=${von}&bis=${bis}`);
-    renderKpis(aktuell); renderTabelle(aktuell);
-    renderDienste(aktuell); renderAusfahrten(aktuell); renderProjekte(aktuell);
+    aktuell = await api(`/api/auswertung?von=${von}&bis=${bis}${jobAnhang()}`);
+    renderKpis(aktuell); renderTabelle(aktuell); renderUebersicht(aktuell);
+    renderUrlaub(aktuell); renderDienste(aktuell); renderAusfahrten(aktuell);
+    renderProjekte(aktuell);
+    if (ansicht === "stempeln") renderHeute();
   } catch(e){ zeige(e.message, "err"); }
 }
 
@@ -387,7 +609,7 @@ function renderKpis(a){
   s.textContent = hm(a.saldo, true); s.className = "value " + klasse(a.saldo);
   const g = document.getElementById("k-gesamt");
   g.textContent = hm(a.gesamtsaldo, true); g.className = "value " + klasse(a.gesamtsaldo);
-  // Beides wird gesondert verrechnet, steht daher neben dem Saldo statt darin.
+  // Gesondert verrechnet: nur zeigen, wenn im Zeitraum auch etwas anfaellt
   for (const [feld, kachel, wert] of [["k-pauschale", "kpi-pauschale", a.pauschale],
                                       ["k-ausfahrt", "kpi-ausfahrt", a.ausfahrt]]){
     document.getElementById(kachel).style.display = wert ? "" : "none";
@@ -450,11 +672,11 @@ function renderDienste(a){
   document.getElementById("dienstListe").innerHTML =
     `<table><thead><tr><th>Dienst</th><th class="num">Tage</th>
      <th class="num">Pauschale gesamt</th><th class="num">Ausfahrten</th>
-     <th class="num">davon Zeit</th></tr></thead><tbody>` +
+     <th class="hide num">davon Zeit</th></tr></thead><tbody>` +
     a.dienste.map(d => `<tr><td>${esc(d.name)}</td><td class="num">${d.tage}</td>
       <td class="num">${hm(d.minuten)}</td>
       <td class="num">${d.ausfahrten || 0}</td>
-      <td class="num">${d.ausfahrt_minuten ? hm(d.ausfahrt_minuten) : "–"}</td></tr>`).join("")
+      <td class="hide num">${d.ausfahrt_minuten ? hm(d.ausfahrt_minuten) : "–"}</td></tr>`).join("")
     + "</tbody></table>";
 }
 
@@ -473,8 +695,7 @@ function renderAusfahrten(a){
       const we = x.wochentag >= 6;
       return `<tr class="${we ? "we" : ""}">
         <td><strong>${WT[x.wochentag-1]}</strong> ${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}.</td>
-        <td>${x.dienst ? esc(x.dienst)
-             : '<span class="hint">ohne Diensttag</span>'}</td>
+        <td>${x.dienst ? esc(x.dienst) : '<span class="hint">ohne Diensttag</span>'}</td>
         <td>${esc(x.von)}–${esc(x.bis)}</td>
         <td class="hide num">${x.pause ? x.pause + " min" : ""}</td>
         <td class="hide">${esc(x.notiz)}</td>
@@ -510,6 +731,299 @@ function renderProjekte(a){
   document.getElementById("projekte").innerHTML = namen.map(n => `<option value="${esc(n)}">`).join("");
 }
 
+// ---------- Bericht ----------
+function berichtDrucken(){
+  if (!aktuell) return zeige("Bitte zuerst einen Zeitraum wählen.", "err");
+  const a = aktuell;
+  const eigen = jobWahl && jobWahl !== "alle" ? jobWahl : settings?.aktiverJob;
+  const job = (settings?.jobs || []).find(j => j.id === eigen);
+  const titel = (settings?.name ? settings.name + " · " : "")
+    + (jobWahl === "alle" ? "alle Jobs" : (job?.name || ""));
+  const zeilen = a.tage.flatMap(t => t.eintraege.map((e, i) => `
+    <tr class="${t.wochentag >= 6 ? "we" : ""}">
+      <td>${i === 0 ? WT[t.wochentag-1] + " " + deDatum(t.datum) : ""}</td>
+      <td>${esc(artName(e))}</td>
+      <td>${e.von && e.bis ? esc(e.von) + "–" + esc(e.bis) : ""}</td>
+      <td class="num">${e.pause ? e.pause + " min" : ""}</td>
+      <td>${esc(e.projekt || "")}</td>
+      <td>${esc(e.notiz || "")}</td>
+      <td class="num">${hm(e.minuten)}</td>
+      <td class="num">${i === 0 ? hm(t.saldo, true) : ""}</td>
+    </tr>`)).join("");
+
+  document.getElementById("bericht").innerHTML = `
+    <h1 style="margin:0 0 4px">Arbeitszeitnachweis</h1>
+    <p style="margin:0 0 16px">${esc(titel)}<br>
+       Zeitraum ${deDatum(a.von)} bis ${deDatum(a.bis)}</p>
+    <table style="margin-bottom:18px"><tbody>
+      <tr><td>Gearbeitet</td><td class="num"><strong>${hm(a.ist)}</strong></td></tr>
+      <tr><td>Gutschriften</td><td class="num">${hm(a.gutschrift)}</td></tr>
+      <tr><td>Sollzeit</td><td class="num">${hm(a.soll)}</td></tr>
+      <tr><td>Saldo im Zeitraum</td><td class="num"><strong>${hm(a.saldo, true)}</strong></td></tr>
+      <tr><td>Überstunden gesamt</td><td class="num">${hm(a.gesamtsaldo, true)}</td></tr>
+    </tbody></table>
+    <table><thead><tr><th>Tag</th><th>Art</th><th>Von–Bis</th><th class="num">Pause</th>
+      <th>Projekt</th><th>Notiz</th><th class="num">Dauer</th><th class="num">Saldo</th></tr></thead>
+      <tbody>${zeilen || '<tr><td colspan="8">Keine Einträge</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="6"><strong>Summe</strong></td>
+        <td class="num"><strong>${hm(a.erfasst)}</strong></td>
+        <td class="num"><strong>${hm(a.saldo, true)}</strong></td></tr></tfoot></table>
+    <p style="margin-top:28px">Datum, Unterschrift: ______________________________</p>`;
+  window.print();
+}
+
+// ---------- Ansichten ----------
+const ANSICHTEN = ["stempeln", "erfassen", "uebersicht", "planung", "einstellungen"];
+let ansicht = "stempeln";
+
+function zeigeAnsicht(name){
+  if (!ANSICHTEN.includes(name)) name = "stempeln";
+  ansicht = name;
+  for (const el of document.querySelectorAll("section[data-ansicht]"))
+    el.classList.toggle("sichtbar", el.dataset.ansicht.split(" ").includes(name));
+  for (const el of document.querySelectorAll("nav#nav button"))
+    el.classList.toggle("aktiv", el.dataset.ziel === name);
+  // Die Jobauswahl gehoert nicht zur Stempelansicht - dort steht der Job im Text
+  document.getElementById("jobLeiste").style.display =
+    (name === "stempeln" || (settings?.jobs || []).length < 2) ? "none" : "";
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  window.scrollTo({top: 0});
+  if (name === "stempeln") renderHeute();
+}
+
+// ---------- Jobs ----------
+function fuelleJobWahl(){
+  const el = document.getElementById("jobWahl");
+  const jobs = settings?.jobs || [];
+  el.innerHTML = jobs.map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join("")
+    + (jobs.length > 1 ? '<option value="alle">Alle Jobs zusammen</option>' : "");
+  if (!jobWahl) jobWahl = settings?.aktiverJob || jobs[0]?.id || "";
+  el.value = jobWahl;
+  document.getElementById("jobLeiste").style.display =
+    (ansicht === "stempeln" || jobs.length < 2) ? "none" : "";
+  const zielName = jobs.find(j => j.id === schreibJob())?.name;
+  document.getElementById("sollLabel").textContent = zielName
+    ? `Sollstunden je Wochentag – Job „${zielName}"` : "Sollstunden je Wochentag";
+}
+
+async function jobWechsel(){
+  jobWahl = document.getElementById("jobWahl").value;
+  try {
+    if (jobWahl && jobWahl !== "alle")
+      settings = await api("/api/einstellungen", {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({aktiverJob: jobWahl})});
+    renderSettings();
+  } catch(e){ zeige(e.message, "err"); }
+  await load(); await ladeFeiertage();
+}
+
+function jobListe(){
+  if (!jobEntwurf) jobEntwurf = (settings?.jobs || []).map(j => ({...j}));
+  return jobEntwurf;
+}
+
+function zeichneJobs(){
+  document.getElementById("jobListe").innerHTML = jobListe().map((j, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <input type="text" value="${esc(j.name)}" style="width:190px" placeholder="Name des Jobs"
+             oninput="jobFeld(${i},'name',this.value)">
+      <input type="color" value="${esc(j.farbe || "#2f6fd0")}" style="width:48px;padding:2px"
+             oninput="jobFeld(${i},'farbe',this.value)">
+      <input type="text" inputmode="decimal" value="${zahlText(j.urlaubstage || 0)}"
+             style="width:74px" title="Urlaubsanspruch in Tagen pro Jahr"
+             oninput="jobFeld(${i},'urlaubstage',this.value)">
+      <span class="hint">Urlaubstage/Jahr</span>
+      ${jobListe().length > 1
+        ? `<button type="button" class="icon danger" title="Entfernen"
+                   onclick="jobWeg(${i})">&#10005;</button>` : ""}
+    </div>`).join("");
+}
+
+function jobFeld(i, feld, wert){ jobListe()[i][feld] = wert; }
+function jobHinzu(){
+  const vorlage = jobListe()[0];
+  jobListe().push({name: "", farbe: "#1a7f4b", soll: {...vorlage.soll},
+                   standardzeiten: JSON.parse(JSON.stringify(vorlage.standardzeiten)),
+                   startsaldo: 0, startdatum: "", urlaubstage: 0});
+  zeichneJobs();
+}
+function jobWeg(i){
+  const j = jobListe()[i];
+  if (!confirm(`Job „${j.name || "ohne Namen"}" entfernen? Bereits erfasste Zeiten dieses Jobs `
+             + "bleiben erhalten, werden aber keinem Job mehr zugeordnet.")) return;
+  jobListe().splice(i, 1);
+  zeichneJobs();
+}
+
+// ---------- Notizvorlagen ----------
+function notizListe(){
+  if (!notizEntwurf) notizEntwurf = [...(settings?.notizvorlagen || [])];
+  return notizEntwurf;
+}
+function zeichneNotizen(){
+  const liste = notizListe();
+  document.getElementById("notizListe").innerHTML = liste.length ? liste.map((n, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <input type="text" value="${esc(n)}" style="max-width:320px" placeholder="z. B. Montage"
+             oninput="notizFeld(${i}, this.value)">
+      <button type="button" class="icon danger" onclick="notizWeg(${i})">&#10005;</button>
+    </div>`).join("") : '<p class="hint" style="margin:6px 0">Noch keine Vorlage angelegt.</p>';
+  zeichneNotizvorschlaege();
+}
+
+function zeichneNotizvorschlaege(){
+  document.getElementById("notizvorlagen").innerHTML =
+    (settings?.notizvorlagen || []).map(n => `<option value="${esc(n)}">`).join("");
+}
+function notizFeld(i, wert){ notizListe()[i] = wert; }
+function notizHinzu(){ notizListe().push(""); zeichneNotizen(); }
+function notizWeg(i){ notizListe().splice(i, 1); zeichneNotizen(); }
+
+// ---------- Übersicht ----------
+const ART_NAMEN = {arbeit: "Arbeitstage", urlaub: "Urlaubstage", krank: "Krankenstand",
+                   feiertag: "Feiertage", gleitzeit: "Zeitausgleich", dienst: "Diensttage"};
+
+function renderUrlaub(a){
+  const panel = document.getElementById("urlaubPanel");
+  const u = a.urlaub;
+  if (!u || !u.gefuehrt){ panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const anteil = u.anspruch > 0 ? Math.min(100, u.verbraucht / u.anspruch * 100) : 0;
+  const tage = n => `${String(n).replace(".", ",")} ${n === 1 ? "Tag" : "Tage"}`;
+  document.getElementById("urlaubListe").innerHTML = `
+    <table><tbody>
+      <tr><td>Anspruch ${u.jahr}</td><td class="num"><strong>${tage(u.anspruch)}</strong></td></tr>
+      <tr><td>verbraucht</td><td class="num">${tage(u.verbraucht)}</td></tr>
+      <tr><td>noch offen</td><td class="num ${u.rest < 0 ? "minus" : "plus"}">
+        <strong>${tage(u.rest)}</strong></td></tr>
+    </tbody></table>
+    <div style="background:var(--soft);border-radius:6px;height:10px;margin-top:10px">
+      <div style="width:${anteil.toFixed(1)}%;background:var(--accent);height:10px;
+                  border-radius:6px"></div></div>`;
+}
+
+function renderUebersicht(a){
+  const zeilen = [
+    ["Gearbeitet", hm(a.ist), ""],
+    ["Gutschriften", hm(a.gutschrift), ""],
+    ["Sollzeit", hm(a.soll), ""],
+    ["Saldo im Zeitraum", hm(a.saldo, true), klasse(a.saldo)],
+    ["Überstunden gesamt", hm(a.gesamtsaldo, true), klasse(a.gesamtsaldo)],
+  ];
+  for (const [typ, name] of Object.entries(ART_NAMEN)){
+    const wert = a.arten?.[typ];
+    if (wert) zeilen.push([name, `${wert.tage} ${wert.tage === 1 ? "Tag" : "Tage"}`
+                                 + (typ === "arbeit" ? "" : ` · ${hm(wert.minuten)} h`), ""]);
+  }
+  document.getElementById("uebersichtListe").innerHTML =
+    `<table><tbody>` + zeilen.map(([n, w, k]) =>
+      `<tr><td>${n}</td><td class="num ${k}"><strong>${w}</strong></td></tr>`).join("")
+    + `</tbody></table>`;
+}
+
+// ---------- Heute ----------
+async function renderHeute(){
+  const ziel = document.getElementById("heuteListe");
+  if (!ziel) return;
+  try {
+    const heuteTag = heute();
+    const a = await api(`/api/auswertung?von=${heuteTag}&bis=${heuteTag}${jobAnhang()}`);
+    const tag = a.tage[0];
+    if (!tag){
+      ziel.innerHTML = `<div class="empty">Für heute ist noch nichts erfasst.</div>`;
+      return;
+    }
+    ziel.innerHTML = `<table><tbody>` + tag.eintraege.map(e => `
+      <tr><td><span class="tag">${esc(artName(e))}</span></td>
+          <td>${e.von && e.bis ? esc(e.von) + "–" + esc(e.bis) : ""}</td>
+          <td>${esc(e.notiz || e.projekt || "")}</td>
+          <td class="num">${hm(e.minuten)}</td></tr>`).join("")
+      + `<tr><td colspan="3"><strong>Saldo heute</strong></td>
+             <td class="num ${klasse(tag.saldo)}"><strong>${hm(tag.saldo, true)}</strong></td></tr>`
+      + `</tbody></table>`;
+  } catch(e){ ziel.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+// ---------- Stempeluhr ----------
+async function ladeStempel(){
+  try {
+    stempelZustand = (await api("/api/stempel")).laufend;
+  } catch(e){ stempelZustand = null; }
+  zeichneStempel();
+}
+
+function zeichneStempel(){
+  const knopf = document.getElementById("stempelKnopf");
+  const uhr = document.getElementById("stempelUhr");
+  const text = document.getElementById("stempelText");
+  const pause = document.getElementById("stempelPause");
+  const weg = document.getElementById("stempelWeg");
+  clearInterval(stempelTakt); stempelTakt = null;
+
+  if (!stempelZustand){
+    knopf.textContent = "Kommen"; knopf.className = "primary";
+    uhr.textContent = "0:00";
+    text.textContent = "Keine laufende Zeitmessung";
+    pause.style.display = weg.style.display = "none";
+    return;
+  }
+  knopf.textContent = "Gehen"; knopf.className = "";
+  pause.style.display = weg.style.display = "";
+  pause.textContent = stempelZustand.pausiert ? "Pause beenden" : "Pause";
+  const jobName = (settings?.jobs || []).find(j => j.id === stempelZustand.job)?.name;
+  const tick = () => {
+    const z = stempelZustand;
+    if (!z) return;
+    const laufendePause = z.pause_gesamt + (z.pausiert ? 0 : 0);
+    uhr.textContent = hm(z.netto) + " h";
+    text.textContent = `seit ${z.von}${jobName ? " · " + jobName : ""}`
+      + (z.projekt ? " · " + z.projekt : "")
+      + (laufendePause ? ` · Pause ${hm(laufendePause)}` : "")
+      + (z.pausiert ? " · pausiert" : "");
+  };
+  tick();
+  stempelTakt = setInterval(async () => {
+    try { stempelZustand = (await api("/api/stempel")).laufend; tick(); }
+    catch(e){ /* still weiterlaufen */ }
+  }, 20000);
+}
+
+async function stempelUmschalten(){
+  try {
+    if (!stempelZustand){
+      await api("/api/stempel/start", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({job: schreibJob(),
+                              projekt: document.getElementById("f-projekt").value})});
+      await ladeStempel();
+      zeige("Zeitmessung gestartet.", "ok");
+    } else {
+      const res = await api("/api/stempel/stop", {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+      await ladeStempel(); await load(); await renderHeute();
+      const e = res.eintrag;
+      zeige(`Gebucht: ${e.von}–${e.bis}${e.pause ? `, Pause ${e.pause} min` : ""}.`, "ok");
+    }
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+async function stempelPause(){
+  try { await api("/api/stempel/pause", {method: "POST",
+          headers: {"Content-Type": "application/json"}, body: "{}"});
+        await ladeStempel();
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+async function stempelVerwerfen(){
+  if (!confirm("Laufende Zeitmessung verwerfen?")) return;
+  try {
+    await api("/api/stempel/stop", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({verwerfen: true})});
+    await ladeStempel(); zeige("Zeitmessung verworfen.", "ok");
+  } catch(e){ zeige(e.message, "err"); }
+}
+
 // ---------- Dienstarten ----------
 let dienstEntwurf = null;   // Arbeitskopie, solange die Einstellungen offen sind
 
@@ -530,7 +1044,7 @@ function zeichneDienstarten(){
     ziel.innerHTML = '<p class="hint" style="margin:6px 0">Noch keine Dienstart angelegt.</p>';
     return;
   }
-  const tagOpt = (i, feld, wert) => WT_LANG.map((t, n) =>
+  const tagOpt = (wert) => WT_LANG.map((t, n) =>
     `<option value="${n+1}"${Number(wert) === n+1 ? " selected" : ""}>${t}</option>`).join("");
   ziel.innerHTML = liste.map((a, i) => `
     <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px">
@@ -540,7 +1054,7 @@ function zeichneDienstarten(){
         <select style="width:auto" onchange="dienstartFeld(${i},'modus',this.value);zeichneDienstarten()">
           <option value=""${a.modus ? "" : " selected"}>fester Wert je Tag</option>
           <option value="durchgehend"${a.modus === "durchgehend" ? " selected" : ""}>durchgehend</option>
-          <option value="taeglich"${a.modus === "taeglich" ? " selected" : ""}>täglich im Zeitfenster</option>
+          <option value="taeglich"${a.modus === "taeglich" ? " selected" : ""}>t&auml;glich im Zeitfenster</option>
         </select>
         <input type="color" value="${esc(a.farbe || "#b45309")}" style="width:48px;padding:2px"
                oninput="dienstartFeld(${i},'farbe',this.value)">
@@ -550,18 +1064,20 @@ function zeichneDienstarten(){
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
         ${a.modus ? `
           <span class="hint">von</span>
-          <select style="width:auto" onchange="dienstartFeld(${i},'starttag',this.value)">${tagOpt(i,"starttag",a.starttag || 1)}</select>
+          <select style="width:auto" onchange="dienstartFeld(${i},'starttag',this.value)">${tagOpt(a.starttag || 1)}</select>
           <input type="text" value="${esc(a.startzeit || "07:00")}" style="width:76px"
                  placeholder="07:00" oninput="dienstartFeld(${i},'startzeit',this.value)">
           <span class="hint">bis</span>
-          <select style="width:auto" onchange="dienstartFeld(${i},'endtag',this.value)">${tagOpt(i,"endtag",a.endtag || 1)}</select>
-          <input type="text" value="${esc(a.endzeit || "07:00")}" style="width:76px"
+          <select style="width:auto" onchange="dienstartFeld(${i},'endtag',this.value)">${tagOpt(a.endtag || 1)}</select>
+          <input type="text" value="${esc(a.endzeit || "20:00")}" style="width:76px"
                  placeholder="20:00" oninput="dienstartFeld(${i},'endzeit',this.value)">
           <span class="hint">${a.dauer != null
-            ? `= ${hm(a.dauer)} h Pauschale, ${a.tage} Tage` : "Pauschale wird beim Speichern gerechnet"}</span>
+            ? `= ${hm(a.dauer)} h Pauschale, ${a.tage} Tage`
+            : "Pauschale wird beim Speichern gerechnet"}</span>
         ` : `
-          <input type="number" value="${Number(a.pauschale) || 0}" min="0" max="1440" step="15"
-                 style="width:96px" oninput="dienstartFeld(${i},'pauschale',this.value)">
+          <input type="text" inputmode="numeric" value="${Number(a.pauschale) || 0}"
+                 style="width:96px" autocomplete="off"
+                 oninput="dienstartFeld(${i},'pauschale',this.value)">
           <span class="hint">Minuten je Diensttag</span>
         `}
       </div>
@@ -574,16 +1090,9 @@ function dienstartHinzu(){
                       endtag: 6, endzeit: "20:00", pauschale: 0, farbe: "#b45309"});
   zeichneDienstarten();
 }
-function dienstartWeg(i){
-  const a = dienstListe()[i];
-  if (a.name && !confirm(`Dienstart „${a.name}" entfernen? Bereits erfasste Diensttage `
-      + "bleiben erhalten, lassen sich danach aber nicht mehr zuordnen.")) return;
-  dienstListe().splice(i, 1);
-  zeichneDienstarten();
-}
 
-// Beschreibt den Wochenrhythmus einer Dienstart in Worten, z. B.
-// "Mo 07:00 – Mo 07:00 durchgehend" oder "Mo–Sa je 07:00–20:00".
+// Beschreibt den Wochenrhythmus in Worten, z. B. "Mo 07:00 – Mo 07:00 durchgehend"
+// oder "Mo–Sa je 07:00–20:00".
 function dienstRhythmus(a){
   if (!a?.modus) return "";
   const von = WT[a.starttag - 1], bis = WT[a.endtag - 1];
@@ -592,9 +1101,45 @@ function dienstRhythmus(a){
     : `${von} ${a.startzeit} – ${bis} ${a.endzeit} durchgehend`;
 }
 
+// Zeigt vor dem Anlegen, welche Tage der Dienst tatsächlich belegt.
+function dienstVorschau(){
+  const el = document.getElementById("dienstVorschau");
+  const wrap = document.getElementById("d-bis-wrap");
+  if (!el || !wrap) return;
+  const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("d-art").value);
+  if (!art){ el.textContent = ""; wrap.style.display = "none"; return; }
+  // Ohne Wochenrhythmus braucht es weiterhin ein Enddatum von Hand.
+  wrap.style.display = art.modus ? "none" : "";
+  const von = document.getElementById("d-von").value;
+  if (!art.modus){
+    el.textContent = `${art.name}: ${hm(art.pauschale)} h je Tag im gewählten Zeitraum.`;
+    return;
+  }
+  if (!von){
+    el.textContent = `${art.name}: ${dienstRhythmus(art)}, ${hm(art.dauer)} h Pauschale.`;
+    return;
+  }
+  // Beginn auf den Starttag der Dienstart zurückziehen - wie im Rechenteil.
+  const d = new Date(von + "T00:00:00");
+  const wd = ((d.getDay() + 6) % 7) + 1;
+  d.setDate(d.getDate() - ((wd - art.starttag + 7) % 7));
+  const start = iso(d);
+  const ende = new Date(d); ende.setDate(ende.getDate() + art.tage - 1);
+  el.textContent = `${art.name}: ${dienstRhythmus(art)} — ${deDatum(start)} bis `
+    + `${deDatum(iso(ende))}, ${art.tage} Tage, ${hm(art.dauer)} h Pauschale `
+    + "(gesondert verrechnet).";
+}
+function dienstartWeg(i){
+  const a = dienstListe()[i];
+  if (a.name && !confirm(`Dienstart „${a.name}" entfernen? Bereits erfasste Diensttage `
+      + "bleiben erhalten, lassen sich danach aber nicht mehr zuordnen.")) return;
+  dienstListe().splice(i, 1);
+  zeichneDienstarten();
+}
+
 function fuelleDienstAuswahl(){
   const arten = settings?.dienstarten || [];
-  // 'dauer' liefert die Auswertung mit; sie ist in beiden Betriebsarten gleich.
+  // 'dauer' liefert der Rechenteil mit; sie ist in beiden Betriebsarten gleich.
   const html = arten.map(a => `<option value="${esc(a.id)}">${esc(a.name)}`
     + (a.modus ? ` (${hm(a.dauer || 0)} h)` : ` (${hm(a.pauschale)} h/Tag)`)
     + "</option>").join("");
@@ -610,35 +1155,20 @@ function fuelleDienstAuswahl(){
 function dienstWechsel(){
   const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("f-dienstart").value);
   if (art && !document.getElementById("f-id").value){
-    // Einzelner Diensttag: bei festem Rhythmus der uebliche Anteil eines Tages.
+    // Einzelner Diensttag: bei festem Rhythmus der übliche Anteil eines Tages.
     document.getElementById("f-gutschrift").value = art.modus && art.tage
       ? Math.round(art.dauer / art.tage) : art.pauschale;
   }
 }
 
-// Zeigt vor dem Anlegen, welche Tage der Dienst tatsaechlich belegt.
-function dienstVorschau(){
-  const el = document.getElementById("dienstVorschau");
-  const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("d-art").value);
-  const wrap = document.getElementById("d-bis-wrap");
-  if (!art){ el.textContent = ""; wrap.style.display = "none"; return; }
-  // Ohne Wochenrhythmus braucht es weiterhin ein Enddatum von Hand.
-  wrap.style.display = art.modus ? "none" : "";
-  const von = document.getElementById("d-von").value;
-  if (!art.modus){
-    el.textContent = `${art.name}: ${hm(art.pauschale)} h je Tag im gewählten Zeitraum.`;
-    return;
-  }
-  if (!von){ el.textContent = `${art.name}: ${dienstRhythmus(art)}, ${hm(art.dauer)} h Pauschale.`; return; }
-  // Beginn auf den Starttag der Dienstart zurueckziehen - wie im Rechenteil.
-  const d = new Date(von + "T00:00:00");
-  const wd = ((d.getDay() + 6) % 7) + 1;
-  d.setDate(d.getDate() - ((wd - art.starttag + 7) % 7));
-  const start = iso(new Date(d.getTime() - d.getTimezoneOffset() * 60000));
-  const ende = new Date(d); ende.setDate(ende.getDate() + art.tage - 1);
-  const stop = iso(new Date(ende.getTime() - ende.getTimezoneOffset() * 60000));
-  el.textContent = `${art.name}: ${dienstRhythmus(art)} — ${deDatum(start)} bis ${deDatum(stop)}, `
-    + `${art.tage} Tage, ${hm(art.dauer)} h Pauschale (gesondert verrechnet).`;
+function setzeDienstWoche(){
+  const start = document.getElementById("d-von").value || heute();
+  const d = new Date(start + "T00:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));          // auf Montag zurueck
+  const mo = iso(new Date(d.getTime() - d.getTimezoneOffset() * 60000));
+  const so = new Date(d); so.setDate(so.getDate() + 6);
+  document.getElementById("d-von").value = mo;
+  document.getElementById("d-bis").value = iso(new Date(so.getTime() - so.getTimezoneOffset() * 60000));
 }
 
 async function trageDienstEin(){
@@ -652,10 +1182,10 @@ async function trageDienstEin(){
   try {
     const res = await api("/api/dienste", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({dienstart, von, bis}),
+      body: JSON.stringify({dienstart, von, bis, job: schreibJob()}),
     });
-    zeige(`${res.name}: ${res.angelegt} Tage eingetragen, ${deDatum(res.von)} bis ${deDatum(res.bis)} `
-      + `(${hm(res.pauschale)} h Pauschale, gesondert verrechnet`
+    zeige(`${res.name}: ${res.angelegt} Tage eingetragen, ${deDatum(res.von)} bis `
+      + `${deDatum(res.bis)} (${hm(res.pauschale)} h Pauschale, gesondert verrechnet`
       + (res.uebersprungen ? `; ${res.uebersprungen} Tage bereits vorhanden).` : ")."), "ok");
     await load();
   } catch(e){ zeige(e.message, "err"); }
@@ -668,7 +1198,7 @@ async function ladeFeiertage(){
   const jahr = document.getElementById("jahr").value;
   if (!jahr) return;
   try {
-    const res = await api(`/api/feiertage?jahr=${jahr}`);
+    const res = await api(`/api/feiertage?jahr=${jahr}${jobAnhang()}`);
     const ziel = document.getElementById("feiertagsListe");
     ziel.innerHTML = `<table><thead><tr>
       <th>Datum</th><th>Tag</th><th>Feiertag</th><th class="num">Gutschrift</th><th>Status</th>
@@ -691,7 +1221,7 @@ async function trageFeiertageEin(){
   try {
     const res = await api("/api/feiertage", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({jahr: Number(jahr)}),
+      body: JSON.stringify({jahr: Number(jahr), job: schreibJob()}),
     });
     zeige(res.angelegt
       ? `${res.angelegt} Feiertage eingetragen, ${res.uebersprungen} übersprungen.`
@@ -708,13 +1238,15 @@ async function fuelleAuf(){
   try {
     const res = await api("/api/auffuellen", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({von, bis}),
+      body: JSON.stringify({von, bis, job: schreibJob()}),
     });
     const u = res.uebersprungen;
+    const vorStart = u.vor_startdatum
+      ? ` ${u.vor_startdatum} Tage liegen vor dem Startdatum des Jobs.` : "";
     zeige(res.angelegt
       ? `${res.angelegt} Arbeitstage eingetragen (${u.belegt} bereits erfasst, `
-        + `${u.feiertag} Feiertage, ${u.ohne_standardzeit} ohne Standardzeit).`
-      : "Nichts zu füllen – alle Arbeitstage im Zeitraum sind bereits erfasst.", "ok");
+        + `${u.feiertag} Feiertage, ${u.ohne_standardzeit} ohne Standardzeit).` + vorStart
+      : "Nichts zu füllen – alle Arbeitstage im Zeitraum sind bereits erfasst." + vorStart, "ok");
     await load();
   } catch(e){ zeige(e.message, "err"); }
 }
@@ -774,7 +1306,7 @@ function normZeit(el){
 function berechneHint(){
   const von = document.getElementById("f-von").value.trim();
   const bis = document.getElementById("f-bis").value.trim();
-  const pause = Number(document.getElementById("f-pause").value || 0);
+  const pause = Math.round(zahlAus(document.getElementById("f-pause").value) ?? 0);
   const el = document.getElementById("dauerHint");
   const gueltig = /^\d{1,2}:\d{2}$/;
   if (!gueltig.test(von) || !gueltig.test(bis)){
@@ -838,13 +1370,15 @@ async function speichern(ev){
     typ: document.getElementById("f-typ").value,
     von: document.getElementById("f-von").value,
     bis: document.getElementById("f-bis").value,
-    pause: Number(document.getElementById("f-pause").value || 0),
+    pause: Math.round(zahlAus(document.getElementById("f-pause").value) ?? 0),
     projekt: document.getElementById("f-projekt").value,
     notiz: document.getElementById("f-notiz").value,
-    gutschrift: document.getElementById("f-typ").value === "arbeit"
-      ? null : (document.getElementById("f-gutschrift").value || null),
+    gutschrift: document.getElementById("f-typ").value === "arbeit" ? null
+      : (zahlAus(document.getElementById("f-gutschrift").value) === null
+         ? null : Math.round(zahlAus(document.getElementById("f-gutschrift").value))),
     dienstart: document.getElementById("f-typ").value === "dienst"
       ? document.getElementById("f-dienstart").value : "",
+    job: schreibJob(),
   };
   try {
     await api(id ? `/api/eintraege/${id}` : "/api/eintraege", {
@@ -860,12 +1394,16 @@ async function speichern(ev){
   } catch(e){ zeige(e.message, "err"); }
 }
 
+let letzterGeloeschter = null;
+
 async function loesche(id){
-  if (!confirm("Diesen Eintrag löschen?")) return;
+  const kopie = (aktuell?.tage || []).flatMap(t => t.eintraege).find(x => x.id === id);
   try {
     await api(`/api/eintraege/${id}`, {
       method: "DELETE", headers: {"Content-Type": "application/json"}});
+    letzterGeloeschter = kopie || null;
     zeige("Eintrag gelöscht.", "ok");
+    if (letzterGeloeschter) zeigeRueckgaengig();
     if (document.getElementById("f-id").value == id) reset();
     await load();
   } catch(e){ zeige(e.message, "err"); }
@@ -874,9 +1412,9 @@ async function loesche(id){
 // ---------- Einstellungen ----------
 function renderSettings(){
   document.getElementById("sollWeek").innerHTML = WT.map((w,i) => `
-    <div><label title="${WT_LANG[i]}">${w}</label>
-    <input type="number" step="0.25" min="0" max="24" id="soll-${i+1}"
-           value="${settings.soll[String(i+1)]}"></div>`).join("");
+    <div><label title="${WT_LANG[i]} – Stunden, z. B. 8,25 oder 8:15">${w}</label>
+    <input type="text" inputmode="decimal" id="soll-${i+1}" autocomplete="off"
+           value="${zahlText(settings.soll[String(i+1)])}"></div>`).join("");
   document.getElementById("standardWeek").innerHTML = WT.map((w,i) => {
     const s = settings.standardzeiten[String(i+1)] || {};
     return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
@@ -885,15 +1423,20 @@ function renderSettings(){
              style="width:82px" value="${esc(s.von || "")}">
       <input type="text" id="std-bis-${i+1}" placeholder="bis" maxlength="5"
              style="width:82px" value="${esc(s.bis || "")}">
-      <input type="number" id="std-pause-${i+1}" placeholder="Pause" min="0" step="5"
-             style="width:92px" value="${s.pause ?? ""}">
+      <input type="text" inputmode="numeric" id="std-pause-${i+1}" placeholder="Pause"
+             style="width:92px" autocomplete="off" value="${s.pause ?? ""}">
       <span class="hint">Min Pause</span>
     </div>`;
   }).join("");
   document.getElementById("s-sondertage").value = settings.sondertage || "keine";
+  document.getElementById("s-zeitzone").value = settings.zeitzone || "Europe/Vienna";
+  document.getElementById("s-rundung").value = String(settings.rundung || 0);
+  document.getElementById("s-rundungsmodus").value = settings.rundungsmodus || "kaufmaennisch";
+  jobEntwurf = null; notizEntwurf = null;
+  fuelleJobWahl(); zeichneJobs(); zeichneNotizen();
   renderDienstarten();
   fuelleDienstAuswahl();
-  document.getElementById("s-startsaldo").value = settings.startsaldo;
+  document.getElementById("s-startsaldo").value = zahlText(settings.startsaldo);
   document.getElementById("s-startdatum").value = settings.startdatum || "";
   document.getElementById("s-name").value = settings.name || "";
   const wochen = Object.values(settings.soll).reduce((a,b) => a + Number(b), 0);
@@ -902,34 +1445,169 @@ function renderSettings(){
     " h/Woche · lokal gespeichert";
 }
 
-async function speichereEinstellungen(){
+let autoTakt = null;
+
+// Sammelt Tastendrücke und speichert erst, wenn es kurz ruhig ist
+function planeSpeichern(){
+  clearTimeout(autoTakt);
+  setzeStand("Änderung erkannt …");
+  autoTakt = setTimeout(() => speichereEinstellungen({still: true}), 1200);
+}
+
+function setzeStand(text, art){
+  const el = document.getElementById("speicherStand");
+  if (!el) return;
+  el.textContent = text;
+  el.className = art === "err" ? "hint minus" : "hint";
+}
+
+// Alle Felder der Einstellungen - auch die erst später erzeugten
+document.addEventListener("DOMContentLoaded", () => {
+  const bereich = document.getElementById("einstellungen");
+  if (!bereich) return;
+  for (const ereignis of ["input", "change"])
+    bereich.addEventListener(ereignis, ev => {
+      if (ev.target.matches("input, select, textarea")) planeSpeichern();
+    });
+});
+
+async function speichereEinstellungen(opt = {}){
+  clearTimeout(autoTakt);
   const soll = {}, standardzeiten = {};
   for (let i = 1; i <= 7; i++){
-    soll[String(i)] = Number(document.getElementById("soll-"+i).value || 0);
+    const feld = document.getElementById("soll-"+i);
+    const wert = zahlAus(feld.value);
+    if (wert === null || wert < 0 || wert > 24){
+      if (!opt.still) feld.focus();
+      return meckern(`Sollstunden für ${WT_LANG[i-1]}: „${feld.value}" ist keine Stundenangabe `
+                   + "zwischen 0 und 24. Beispiele: 8,25 oder 8:15", opt);
+    }
+    soll[String(i)] = wert;
+
     const vonEl = document.getElementById("std-von-"+i), bisEl = document.getElementById("std-bis-"+i);
     normZeit(vonEl); normZeit(bisEl);
+    const pauseEl = document.getElementById("std-pause-"+i);
+    const pause = zahlAus(pauseEl.value) ?? 0;
+    if (pause < 0){
+      if (!opt.still) pauseEl.focus();
+      return meckern(`Pause für ${WT_LANG[i-1]} kann nicht negativ sein.`, opt);
+    }
     standardzeiten[String(i)] = (vonEl.value && bisEl.value)
-      ? {von: vonEl.value, bis: bisEl.value,
-         pause: Number(document.getElementById("std-pause-"+i).value || 0)}
-      : null;
+      ? {von: vonEl.value, bis: bisEl.value, pause: Math.round(pause)} : null;
+  }
+  const startsaldo = zahlAus(document.getElementById("s-startsaldo").value) ?? 0;
+  for (const j of jobListe()){
+    const tage = j.urlaubstage === undefined || j.urlaubstage === null || j.urlaubstage === ""
+      ? 0 : zahlAus(j.urlaubstage);
+    if (tage === null || tage < 0 || tage > 366)
+      return meckern(`Urlaubstage für „${j.name || "Job"}": „${j.urlaubstage}" ist keine `
+                   + "Zahl zwischen 0 und 366.", opt);
+    j.urlaubstage = tage;
+  }
+  for (const a of dienstListe()){
+    const p = zahlAus(a.pauschale);
+    if (p === null || p < 0 || p > 1440)
+      return meckern(`Pauschale von „${a.name || "ohne Namen"}": „${a.pauschale}" ist keine `
+                   + "Minutenangabe zwischen 0 und 1440.", opt);
+    a.pauschale = Math.round(p);
   }
   try {
     settings = await api("/api/einstellungen", {
       method: "PUT", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
+        job: schreibJob(),
+        jobs: jobListe().filter(j => (j.name || "").trim()),
+        notizvorlagen: notizListe().filter(n => (n || "").trim()),
         soll, standardzeiten,
         dienstarten: dienstListe().filter(a => (a.name || "").trim()),
         sondertage: document.getElementById("s-sondertage").value,
-        startsaldo: Number(document.getElementById("s-startsaldo").value || 0),
+        zeitzone: document.getElementById("s-zeitzone").value,
+        rundung: Number(document.getElementById("s-rundung").value || 0),
+        rundungsmodus: document.getElementById("s-rundungsmodus").value,
+        startsaldo,
         startdatum: document.getElementById("s-startdatum").value,
         name: document.getElementById("s-name").value,
       }),
     });
-    renderSettings(); zeige("Einstellungen gespeichert.", "ok"); await load();
-  } catch(e){ zeige(e.message, "err"); }
+    if (opt.still){
+      // Kennungen uebernehmen, damit weiteres Tippen denselben Job trifft
+      jobListe().forEach((j, i) => { if (settings.jobs[i]) j.id = settings.jobs[i].id; });
+      dienstListe().forEach((a, i) => { if (settings.dienstarten[i]) a.id = settings.dienstarten[i].id; });
+      fuelleJobWahl(); fuelleDienstAuswahl(); zeichneNotizvorschlaege();
+      const jetzt = new Date();
+      setzeStand("Gespeichert um "
+        + `${String(jetzt.getHours()).padStart(2,"0")}:${String(jetzt.getMinutes()).padStart(2,"0")}`);
+    } else {
+      renderSettings();
+      setzeStand("Gespeichert.");
+      zeige("Einstellungen gespeichert.", "ok");
+    }
+    await load();
+  } catch(e){ meckern(e.message, opt); }
+}
+
+let rueckgaengigTakt = null;
+
+// Eigene Leiste, damit andere Meldungen den Knopf nicht wegwischen
+function zeigeRueckgaengig(){
+  const leiste = document.getElementById("rueckgaengig");
+  const e = letzterGeloeschter;
+  document.getElementById("rueckgaengigText").textContent =
+    `Gelöscht: ${WT[(new Date(e.datum + "T00:00:00").getDay() + 6) % 7]}, ${deDatum(e.datum)}`
+    + (e.von && e.bis ? ` · ${e.von}–${e.bis}` : "");
+  leiste.style.display = "block";
+  clearTimeout(rueckgaengigTakt);
+  rueckgaengigTakt = setTimeout(versteckeRueckgaengig, 20000);
+}
+
+function versteckeRueckgaengig(){
+  clearTimeout(rueckgaengigTakt);
+  document.getElementById("rueckgaengig").style.display = "none";
+  letzterGeloeschter = null;
+}
+
+async function stelleWiederHer(){
+  if (!letzterGeloeschter) return;
+  const e = letzterGeloeschter;
+  versteckeRueckgaengig();
+  try {
+    await api("/api/eintraege", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({datum: e.datum, typ: e.typ, von: e.von, bis: e.bis, pause: e.pause,
+                            projekt: e.projekt, notiz: e.notiz, gutschrift: e.gutschrift,
+                            dienstart: e.dienstart, job: e.job}),
+    });
+    zeige("Eintrag wiederhergestellt.", "ok");
+    await load();
+  } catch(err){ zeige(err.message, "err"); }
+}
+
+// Fehler melden: beim automatischen Speichern dezent, sonst als Meldung oben
+function meckern(text, opt = {}){
+  setzeStand(text, "err");
+  if (!opt.still) zeige(text, "err");
 }
 
 // ---------- Export / Import ----------
+// Sicherung direkt in eine andere App geben (Dateien, iCloud, Drive, Mail)
+async function sicherungTeilen(){
+  try {
+    const daten = await api("/api/export.json");
+    const datei = new File([JSON.stringify(daten, null, 2)],
+                           `zeiterfassung-${heute()}.json`, {type: "application/json"});
+    if (navigator.canShare && navigator.canShare({files: [datei]})){
+      await navigator.share({files: [datei], title: "Zeiterfassung Sicherung"});
+      localStorage.setItem("letzteSicherung", String(Date.now()));
+      document.getElementById("sicherung").style.display = "none";
+      return zeige("Sicherung geteilt.", "ok");
+    }
+    await exportJson();
+  } catch(e){
+    if (e && e.name === "AbortError") return;      // vom Nutzer abgebrochen
+    zeige(e.message, "err");
+  }
+}
+
 async function exportJson(){
   const name = `zeiterfassung-${heute()}.json`;
   if (!LOKAL_MODUS) return void (window.location = "/api/export.json");
@@ -940,9 +1618,11 @@ async function exportJson(){
 
 async function exportCsv(){
   const von = document.getElementById("von").value, bis = document.getElementById("bis").value;
-  if (!LOKAL_MODUS) return void (window.location = `/api/export.csv?von=${von}&bis=${bis}`);
+  if (!LOKAL_MODUS)
+    return void (window.location = `/api/export.csv?von=${von}&bis=${bis}${jobAnhang()}`);
   dateiSpeichern(`zeiterfassung-${von}-bis-${bis}.csv`,
-                 await api(`/api/export.csv?von=${von}&bis=${bis}`), "text/csv;charset=utf-8");
+                 await api(`/api/export.csv?von=${von}&bis=${bis}${jobAnhang()}`),
+                 "text/csv;charset=utf-8");
 }
 async function importJson(input){
   const datei = input.files[0]; if (!datei) return;
@@ -975,14 +1655,26 @@ async function importJson(input){
   setzeMonat();
   reset();
   typWechsel();
+  await ladeStempel();
+  zeigeAnsicht(location.hash.slice(1) || "stempeln");
+  window.addEventListener("hashchange", () => zeigeAnsicht(location.hash.slice(1)));
   if (LOKAL_MODUS){
     document.getElementById("who").textContent =
       (settings?.name ? settings.name + " · " : "") + "Daten nur auf diesem Gerät";
     sicherungsHinweis();
   }
+  // Teilen gibt es vor allem am Handy
+  try {
+    if (navigator.canShare && navigator.canShare({files: [new File(["{}"], "p.json",
+        {type: "application/json"})]}))
+      document.getElementById("teilenKnopf").style.display = "";
+  } catch(e){ /* Teilen nicht verfuegbar */ }
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")){
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
+  await tagesSicherung();
+  await ladeSicherungen();
+  speicherPruefen();
 })();
 
 // Im Browser gespeicherte Daten koennen verloren gehen - regelmaessig erinnern.
@@ -995,6 +1687,115 @@ function sicherungsHinweis(){
   box.querySelector("span").textContent = letzte
     ? `Letzte Sicherung vor ${Math.floor(tage)} Tagen.`
     : "Noch keine Sicherung angelegt.";
+}
+
+// ---------- Speicher & automatische Sicherung ----------
+let sicherungsOrdner = "";
+
+function mb(zahl){
+  if (!zahl && zahl !== 0) return "?";
+  if (zahl < 1024) return zahl + " B";
+  if (zahl < 1024 * 1024) return (zahl / 1024).toFixed(0) + " KB";
+  return (zahl / 1048576).toFixed(1) + " MB";
+}
+
+// Android und iOS duerfen Browserdaten bei Speichermangel loeschen. Mit
+// storage.persist() bittet die App darum, davon ausgenommen zu werden.
+async function speicherPruefen(){
+  const ziel = document.getElementById("speicherInfo");
+  if (!ziel) return;
+  if (!LOKAL_MODUS){
+    ziel.innerHTML = "Die Daten liegen in der Datenbankdatei auf diesem Rechner." +
+      (sicherungsOrdner ? " Sicherungen: <code>" + esc(sicherungsOrdner) + "</code>" : "");
+    return;
+  }
+  let dauerhaft = null, platz = null;
+  try {
+    if (navigator.storage && navigator.storage.persisted){
+      dauerhaft = await navigator.storage.persisted();
+      if (!dauerhaft && navigator.storage.persist)
+        dauerhaft = await navigator.storage.persist();
+    }
+    if (navigator.storage && navigator.storage.estimate)
+      platz = await navigator.storage.estimate();
+  } catch(e){ /* aeltere Browser koennen das nicht */ }
+
+  const zeilen = [];
+  if (dauerhaft === true)
+    zeilen.push("Dauerhafter Speicher ist aktiv – das Gerät räumt die Daten nicht von selbst weg.");
+  else if (dauerhaft === false)
+    zeilen.push("<strong>Kein dauerhafter Speicher.</strong> Bei Speichermangel darf das Gerät " +
+                "die Daten löschen. Am sichersten wird es, wenn du die App zum Home-Bildschirm " +
+                "hinzufügst und regelmäßig eine Sicherungsdatei anlegst.");
+  else
+    zeilen.push("Dieser Browser sagt nichts über dauerhaften Speicher.");
+
+  if (platz && platz.quota){
+    const frei = platz.quota - (platz.usage || 0);
+    zeilen.push(`Belegt: ${mb(platz.usage)} von ${mb(platz.quota)} (${mb(frei)} frei).`);
+    if (frei < 5 * 1048576)
+      zeilen.push("<strong>Der Platz wird knapp.</strong> Bitte lege jetzt eine Sicherungsdatei an " +
+                  "und schaffe auf dem Gerät Platz.");
+  }
+  ziel.innerHTML = zeilen.join("<br>");
+}
+
+const SICHERUNGS_GRUND = {manuell: "von Hand", automatisch: "automatisch",
+                          vorimport: "vor dem Überschreiben"};
+
+async function ladeSicherungen(){
+  const ziel = document.getElementById("sicherungsListe");
+  if (!ziel) return;
+  try {
+    const res = await api("/api/sicherungen");
+    sicherungsOrdner = res.ordner || "";
+    const liste = res.sicherungen || [];
+    if (!liste.length){
+      ziel.innerHTML = '<p class="hint">Noch keine Kopie vorhanden.</p>';
+      return;
+    }
+    ziel.innerHTML = '<table><thead><tr><th>Zeitpunkt</th><th>Anlass</th>' +
+      '<th class="hide">Einträge</th><th class="hide">Größe</th><th></th></tr></thead><tbody>' +
+      liste.map(s => `<tr><td>${esc(s.zeit)}</td>` +
+        `<td>${esc(SICHERUNGS_GRUND[s.grund] || s.grund || "")}</td>` +
+        `<td class="hide">${s.eintraege}</td><td class="hide">${mb(s.groesse)}</td>` +
+        `<td><button type="button" onclick="sicherungZurueck('${esc(String(s.datei))}','${esc(s.zeit)}')">` +
+        `Zurückholen</button></td></tr>`).join("") + "</tbody></table>";
+  } catch(e){ ziel.innerHTML = '<p class="hint">' + esc(e.message) + "</p>"; }
+}
+
+async function sicherungJetzt(){
+  try {
+    await api("/api/sicherungen", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({grund: "manuell"})});
+    await ladeSicherungen();
+    zeige("Kopie angelegt.", "ok");
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+async function sicherungZurueck(datei, zeit){
+  if (!confirm(`Stand vom ${zeit} zurückholen?\n\n` +
+               "Alle jetzigen Einträge werden dadurch ersetzt. " +
+               "Der aktuelle Stand wird vorher automatisch kopiert."))
+    return;
+  try {
+    const res = await api("/api/sicherungen/wiederherstellen", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({datei})});
+    settings = await api("/api/einstellungen");
+    renderSettings(); await load(); await ladeSicherungen();
+    zeige(`${res.eintraege} Einträge zurückgeholt.`, "ok");
+  } catch(e){ zeige(e.message, "err"); }
+}
+
+// Einmal am Tag im Hintergrund eine Kopie anlegen
+async function tagesSicherung(){
+  try {
+    await api("/api/sicherungen", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({grund: "automatisch", nur_wenn_aelter_als: 24})});
+  } catch(e){ /* darf den Start nicht stoeren */ }
 }
 
 async function jetztSichern(){

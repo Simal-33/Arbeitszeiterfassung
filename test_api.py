@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Kleiner End-to-End-Test gegen den laufenden Server (python3 app.py --port 8765)."""
 import json
+import os
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8765"
+# Adresse des laufenden Servers; abweichender Port per Umgebungsvariable:
+#   ZEIT_URL=http://127.0.0.1:9000 python3 test_api.py
+BASE = os.environ.get("ZEIT_URL", "http://127.0.0.1:8765")
 ok, fail = 0, 0
 
 
@@ -229,8 +232,13 @@ check("Urlaub mit Gutschrift angelegt", s, 201)
 check("Gutschrift gespeichert", r["gutschrift"], 180)
 s, a = call("GET", "/api/auswertung?von=2026-09-01&bis=2026-09-01")
 check("Gutschrift wirkt", a["gutschrift"], 180)
-s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "urlaub", "gutschrift": -5})
-check("negative Gutschrift -> 400", s, 400)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "gleitzeit",
+                                       "gutschrift": -90, "notiz": "ausbezahlt"})
+check("Abzug erlaubt (ausbezahlte Stunden)", r["gutschrift"], -90)
+s, a = call("GET", "/api/auswertung?von=2026-09-02&bis=2026-09-02")
+check("Abzug wirkt auf den Saldo", a["gutschrift"], -90)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-09-03", "typ": "urlaub", "gutschrift": -5000})
+check("Abzug groesser als 24 h -> 400", s, 400)
 s, r = call("POST", "/api/eintraege", {"datum": "2026-09-02", "typ": "arbeit",
                                        "von": "08:00", "bis": "12:00", "gutschrift": 500})
 check("Gutschrift bei Arbeit ignoriert", r["gutschrift"], None)
@@ -353,8 +361,8 @@ s, r = call("POST", "/api/eintraege", {"datum": "2026-09-08", "typ": "arbeit",
 check("Einsatz angelegt", s, 201)
 s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
 _t = {t["datum"]: t for t in a["tage"]}
-# Die Pauschale wird gesondert verrechnet: eigener Topf, nicht in Gutschrift,
-# nicht im Saldo und nicht in den Ueberstunden.
+# Die Zeitpauschale wird gesondert verrechnet: sie steht in einem eigenen Feld
+# und darf Ist, Saldo und Ueberstunden nicht beruehren.
 check("Diensttag Pauschale getrennt", _t["2026-09-07"]["pauschale"], 120)
 check("Diensttag ohne Gutschrift", _t["2026-09-07"]["gutschrift"], 0)
 check("Diensttag Saldo (Soll 8 h)", _t["2026-09-07"]["saldo"], -480)
@@ -362,7 +370,7 @@ check("Einsatz zaehlt zusaetzlich", _t["2026-09-08"]["ist"], 150)
 check("Einsatztag gesamt", _t["2026-09-08"]["saldo"], 150 - 480)
 check("Sonntag im Dienst bleibt neutral", _t["2026-09-13"]["saldo"], 0)
 check("Pauschale im Zeitraum", a["pauschale"], 840)
-check("Pauschale nicht in erfasst", a["erfasst"], a["ist"] + a["gutschrift"])
+check("Pauschale nicht im Saldo", a["erfasst"], a["ist"] + a["gutschrift"])
 check("Dienstauswertung Tage", a["dienste"][0]["tage"], 7)
 check("Dienstauswertung Minuten", a["dienste"][0]["minuten"], 840)
 check("Dienstauswertung Name", a["dienste"][0]["name"], "Notdienstwoche")
@@ -381,6 +389,189 @@ check("Reimport mit Diensten", s, 200)
 s, a = call("GET", "/api/auswertung?von=2026-09-07&bis=2026-09-13")
 check("Dienste nach Reimport unveraendert", a["dienste"][0]["minuten"], 840)
 
+print("\nJobs")
+s, r = call("PUT", "/api/einstellungen", {"jobs": [
+    {"id": "haupt", "name": "Kältetechniker",
+     "soll": {"1": 8.25, "2": 8.25, "3": 8.25, "4": 8.25, "5": 5.5, "6": 0, "7": 0}},
+    {"name": "Nebenjob", "soll": {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 5, "7": 0}}]})
+check("Jobs gespeichert", s, 200)
+check("Kennungen", [j["id"] for j in r["jobs"]], ["haupt", "nebenjob"])
+check("aktiver Job folgt der Liste", r["aktiverJob"], "haupt")
+check("Sollzeiten des aktiven Jobs gespiegelt", r["soll"]["5"], 5.5)
+s, r = call("PUT", "/api/einstellungen", {"aktiverJob": "nebenjob"})
+check("Jobwechsel", (r["aktiverJob"], r["soll"]["6"]), ("nebenjob", 5.0))
+s, r = call("PUT", "/api/einstellungen", {"aktiverJob": "gibtsnicht"})
+check("unbekannter Job -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"jobs": []})
+check("leere Jobliste -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"soll": {str(d): 4 for d in range(1, 8)}})
+check("Sollzeit trifft nur den aktiven Job",
+      [j["soll"]["1"] for j in r["jobs"]], [8.25, 4.0])
+
+s, r = call("POST", "/api/eintraege", {"datum": "2026-10-05", "typ": "arbeit",
+                                       "von": "08:00", "bis": "12:00", "job": "haupt"})
+check("Eintrag mit Job", r["job"], "haupt")
+s, r = call("POST", "/api/eintraege", {"datum": "2026-10-05", "typ": "arbeit",
+                                       "von": "13:00", "bis": "15:00", "job": "nebenjob"})
+check("zweiter Job am selben Tag", s, 201)
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-05&job=haupt")
+check("Auswertung Job haupt", a["ist"], 240)
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-05&job=nebenjob")
+check("Auswertung Job nebenjob", a["ist"], 120)
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-05&job=alle")
+check("Auswertung alle Jobs", a["ist"], 360)
+check("Kennzahlen je Art", a["arten"]["arbeit"], {"tage": 1, "minuten": 360})
+s, a = call("GET", "/api/auswertung?von=2026-10-05&bis=2026-10-05&job=quatsch")
+check("unbekannter Job in der Auswertung -> 400", s, 400)
+s, e = call("GET", "/api/eintraege?job=nebenjob")
+check("Eintraege nach Job gefiltert", len(e), 1)
+
+print("\nNotizvorlagen")
+s, r = call("PUT", "/api/einstellungen", {"notizvorlagen": ["Montage", "Service", "   "]})
+check("Vorlagen gespeichert", r["notizvorlagen"], ["Montage", "Service"])
+s, r = call("PUT", "/api/einstellungen", {"notizvorlagen": "quatsch"})
+check("Vorlagen als Text -> 400", s, 400)
+
+print("\nStempeluhr")
+s, r = call("GET", "/api/stempel")
+check("nichts laeuft", r["laufend"], None)
+s, r = call("POST", "/api/stempel/start", {"job": "haupt", "projekt": "Kunde X"})
+check("Start", s, 201)
+check("laeuft mit Job", r["laufend"]["job"], "haupt")
+s, r = call("POST", "/api/stempel/start", {})
+check("zweiter Start -> 400", s, 400)
+s, r = call("POST", "/api/stempel/pause", {})
+check("Pause an", r["laufend"]["pausiert"], True)
+s, r = call("POST", "/api/stempel/pause", {})
+check("Pause aus", r["laufend"]["pausiert"], False)
+s, r = call("POST", "/api/stempel/stop", {})
+check("Stoppen unter einer Minute -> 400", s, 400)
+s, r = call("GET", "/api/stempel")
+check("Messung laeuft nach dem Fehler weiter", bool(r["laufend"]), True)
+s, r = call("POST", "/api/stempel/stop", {"verwerfen": True})
+check("Verwerfen", r, {"verworfen": True})
+s, r = call("GET", "/api/stempel")
+check("danach nichts mehr", r["laufend"], None)
+s, r = call("POST", "/api/stempel/stop", {})
+check("Stoppen ohne Messung -> 400", s, 400)
+
+print("\nSommerzeit, Rundung, Urlaub")
+s, r = call("PUT", "/api/einstellungen", {"zeitzone": "Europe/Vienna", "rundung": 15,
+                                          "rundungsmodus": "kaufmaennisch",
+                                          "jobs": [{"id": "standard", "name": "Mein Job",
+                                                    "soll": {str(d): 8 for d in range(1, 6)},
+                                                    "urlaubstage": 25}]})
+check("Rechenregeln gespeichert", (r["zeitzone"], r["rundung"], r["jobs"][0]["urlaubstage"]),
+      ("Europe/Vienna", 15, 25.0))
+s, r = call("PUT", "/api/einstellungen", {"rundung": 7})
+check("krumme Rundung -> 400", s, 400)
+s, r = call("PUT", "/api/einstellungen", {"zeitzone": "Mond/Krater"})
+check("unbekannte Zeitzone -> 400", s, 400)
+
+s, r = call("POST", "/api/eintraege", {"datum": "2027-03-27", "typ": "arbeit",
+                                       "von": "22:00", "bis": "06:00", "pause": 0})
+check("Nacht vor der Umstellung angelegt", s, 201)
+s, a = call("GET", "/api/auswertung?von=2027-03-27&bis=2027-03-27")
+check("Sommerzeit: 8 Wanduhrstunden sind 7 echte", a["ist"], 420)
+s, r = call("POST", "/api/eintraege", {"datum": "2027-10-30", "typ": "arbeit",
+                                       "von": "22:00", "bis": "06:00", "pause": 0})
+s, a = call("GET", "/api/auswertung?von=2027-10-30&bis=2027-10-30")
+check("Winterzeit: 8 Wanduhrstunden sind 9 echte", a["ist"], 540)
+s, r = call("POST", "/api/eintraege", {"datum": "2027-09-06", "typ": "arbeit",
+                                       "von": "07:00", "bis": "16:07", "pause": 45})
+s, a = call("GET", "/api/auswertung?von=2027-09-06&bis=2027-09-06")
+check("502 Minuten auf 15 gerundet", a["ist"], 495)
+
+s, r = call("POST", "/api/eintraege", {"datum": "2027-05-03", "typ": "urlaub"})
+s, r = call("POST", "/api/eintraege", {"datum": "2027-05-04", "typ": "urlaub", "gutschrift": 240})
+s, a = call("GET", "/api/auswertung?von=2027-01-01&bis=2027-12-31")
+check("Urlaub verbraucht (ganzer + halber Tag)", a["urlaub"]["verbraucht"], 1.5)
+check("Urlaub offen", a["urlaub"]["rest"], 23.5)
+check("Urlaub wird gefuehrt", a["urlaub"]["gefuehrt"], True)
+s, r = call("PUT", "/api/einstellungen", {"rundung": 0,
+                                          "jobs": [{"id": "standard", "name": "Mein Job",
+                                                    "soll": {str(d): 8 for d in range(1, 6)}}]})
+s, a = call("GET", "/api/auswertung?von=2027-09-06&bis=2027-09-06")
+check("ohne Rundung wieder minutengenau", a["ist"], 502)
+check("ohne Anspruch nicht gefuehrt", a["urlaub"]["gefuehrt"], False)
+
+print("\nMehrere Jobs: Zuordnung und Abgrenzung")
+s, r = call("PUT", "/api/einstellungen", {"jobs": [
+    {"id": "haupt", "name": "Haupt", "soll": {**{str(d): 8 for d in range(1, 6)}, "6": 0, "7": 0},
+     "standardzeiten": {str(d): {"von": "08:00", "bis": "16:30", "pause": 30} for d in range(1, 6)},
+     "urlaubstage": 25},
+    {"id": "neben", "name": "Neben", "soll": {**{str(d): 4 for d in range(1, 6)}, "6": 0, "7": 0},
+     "standardzeiten": {str(d): {"von": "17:00", "bis": "21:00", "pause": 0} for d in range(1, 6)},
+     "urlaubstage": 10}], "aktiverJob": "haupt"})
+check("zwei Jobs angelegt", [j["id"] for j in r["jobs"]], ["haupt", "neben"])
+s, r = call("POST", "/api/auffuellen", {"von": "2025-11-03", "bis": "2025-11-07", "job": "neben"})
+check("Auffuellen legt an", r["angelegt"], 5)
+s, e = call("GET", "/api/eintraege?von=2025-11-03&bis=2025-11-07")
+check("Eintraege gehoeren dem gewaehlten Job", {x["job"] for x in e}, {"neben"})
+s, a = call("GET", "/api/auswertung?von=2025-11-03&bis=2025-11-07&job=haupt")
+check("anderer Job bleibt leer", a["ist"], 0)
+s, a = call("GET", "/api/auswertung?von=2025-11-03&bis=2025-11-07&job=neben")
+check("Zeiten liegen im richtigen Job", a["ist"], 1200)
+s, r1 = call("POST", "/api/feiertage", {"jahr": 2028, "job": "haupt"})
+s, r2 = call("POST", "/api/feiertage", {"jahr": 2028, "job": "neben"})
+check("Feiertage je Job getrennt", (r1["angelegt"] > 0, r2["angelegt"] > 0), (True, True))
+s, r = call("PUT", "/api/einstellungen", {"job": "gibtsnicht", "soll": {"1": 3}})
+check("unbekannter Job beim Speichern -> 400", s, 400)
+s, csv_text = call("GET", "/api/export.csv?von=2025-11-03&bis=2025-11-07&job=neben")
+check("CSV hat eine Job-Spalte", csv_text.splitlines()[0].split(";")[2], "Job")
+check("CSV filtert nach Job", all("Neben" in z for z in csv_text.strip().splitlines()[1:]), True)
+
+print("\nUrlaubskonto")
+for _tag in ["2028-05-01", "2028-05-06", "2028-05-07"]:      # Mo, Sa, So
+    call("POST", "/api/eintraege", {"datum": _tag, "typ": "urlaub", "job": "haupt"})
+s, a = call("GET", "/api/auswertung?von=2028-08-01&bis=2028-08-31&job=haupt")
+check("Urlaub zaehlt fuers ganze Jahr, nicht nur den Monat", a["urlaub"]["verbraucht"], 1.0)
+check("Urlaub am Wochenende zaehlt nicht", a["urlaub"]["rest"], 24.0)
+s, a = call("GET", "/api/auswertung?von=2028-08-01&bis=2028-08-31&job=alle")
+check("Urlaubskonto auch ueber alle Jobs", a["urlaub"]["anspruch"], 35.0)
+
+print("\nKuenftige Diensttage")
+s, a1 = call("GET", "/api/auswertung?von=2028-01-01&bis=2028-12-31&job=haupt")
+s, r = call("POST", "/api/dienste", {"dienstart": "notdienstwoche", "von": "2029-10-01",
+                                     "bis": "2029-10-07", "job": "haupt"})
+s, a2 = call("GET", "/api/auswertung?von=2029-10-01&bis=2029-10-07&job=haupt")
+check("Dienstwoche in der Zukunft bringt kein Tagessoll", a2["soll"], 0)
+check("nur die Pauschale zaehlt", a2["pauschale"], r["minuten"])
+check("kuenftige Dienstwoche ohne Saldowirkung", a2["saldo"], 0)
+
+print("\nMigration alter Datenbanken")
+import json as _json, os as _os, sqlite3 as _sqlite, tempfile as _tempfile
+_pfad = _os.path.join(_tempfile.mkdtemp(), "alt.db")
+_con = _sqlite.connect(_pfad)
+_con.execute("""CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, datum TEXT NOT NULL,
+  typ TEXT NOT NULL DEFAULT 'arbeit', von TEXT, bis TEXT, pause INTEGER NOT NULL DEFAULT 0,
+  projekt TEXT NOT NULL DEFAULT '', notiz TEXT NOT NULL DEFAULT '')""")
+_con.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+_con.execute("INSERT INTO entries(datum,typ,von,bis,pause) VALUES('2026-08-03','arbeit','07:00','16:00',45)")
+_con.execute("INSERT INTO settings VALUES('soll', ?)",
+             (_json.dumps({"1": 8.25, "2": 8.25, "3": 8.25, "4": 8.25, "5": 5.5, "6": 0, "7": 0}),))
+_con.execute("INSERT INTO settings VALUES('startsaldo', '12.5')")
+_con.execute("INSERT INTO settings VALUES('startdatum', '\"2023-01-02\"')")
+_con.execute("INSERT INTO settings VALUES('name', '\"Markus\"')")
+_con.commit(); _con.close()
+
+_st = _app.Store(_pfad)
+_s = _st.get_settings()
+_job = _s["jobs"][0]
+check("alte Sollzeiten bleiben erhalten", (_job["soll"]["1"], _job["soll"]["5"]), (8.25, 5.5))
+check("alter Startsaldo bleibt erhalten", _job["startsaldo"], 12.5)
+check("altes Startdatum bleibt erhalten", _job["startdatum"], "2023-01-02")
+check("alter Name wird zum Jobnamen", _job["name"], "Markus")
+check("nur ein Job nach der Migration", len(_s["jobs"]), 1)
+check("Eintrag weiterhin lesbar", len(_st.list_entries()), 1)
+check("neue Felder ergaenzt",
+      (_s["zeitzone"], _s["rundung"], _job["urlaubstage"]), ("Europe/Vienna", 0, 0.0))
+_e = _st.list_entries()[0]
+check("Eintrag um neue Spalten ergaenzt",
+      (_e["gutschrift"], _e["dienstart"], _e["job"]), (None, "", ""))
+_a = _app.compute(_st.list_entries(), _app.effective_settings(_st), "2026-08-03", "2026-08-03")
+check("Migration rechnet richtig", (_a["ist"], _a["soll"]), (495, 495))
+_os.remove(_pfad)
 
 print("\nNotdienst mit Wochenrhythmus")
 # 1. Dienst laeuft Montag 07:00 bis Montag 07:00 durchgehend, der 2. und der
@@ -417,7 +608,7 @@ s, r = call("PUT", "/api/einstellungen", {"dienstarten": [
 check("Startzeit als Wort -> 400", s, 400)
 
 # Mittwoch gewaehlt: der Dienst zieht auf seinen Starttag zurueck
-s, r = call("POST", "/api/dienste", {"dienstart": "1-dienst", "von": "2026-10-07"})
+s, r = call("POST", "/api/dienste", {"dienstart": "1-dienst", "von": "2026-10-07", "job": "haupt"})
 check("1. Dienst beginnt am Montag", r["von"], "2026-10-05")
 check("1. Dienst endet am Montag darauf", r["bis"], "2026-10-12")
 check("1. Dienst legt acht Tage an", r["angelegt"], 8)
@@ -463,6 +654,46 @@ check("Ausfahrt ohne Dienstnamen", a["ausfahrten"][0]["dienst"], "")
 s, csv_text = call("GET", "/api/export.csv?von=2026-10-06&bis=2026-10-06")
 check("CSV kennt die Verrechnungsspalte", "Verrechnung" in csv_text.splitlines()[0], True)
 check("CSV markiert Ausfahrt als gesondert", "Ausfahrt" in csv_text and "gesondert" in csv_text, True)
+
+print("\nAutomatische Sicherungen")
+s, r = call("GET", "/api/sicherungen")
+check("Sicherungsliste erreichbar", s, 200)
+_vorher = len(r["sicherungen"])
+s, r = call("POST", "/api/sicherungen", {"grund": "manuell"})
+check("Kopie angelegt", (s, r["angelegt"]), (200, True))
+check("Kopie in der Liste", len(r["sicherungen"]), _vorher + 1)
+_stand = r["sicherungen"][0]
+check("Kopie hat Zeitpunkt", bool(__import__("re").match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$",
+                                                        _stand["zeit"])), True)
+_anzahl = _stand["eintraege"]
+s, r = call("POST", "/api/sicherungen", {"grund": "automatisch", "nur_wenn_aelter_als": 24})
+check("Tageskopie legt nicht doppelt an", (s, r["angelegt"]), (200, False))
+# Einen Eintrag loeschen und wieder zurueckholen
+s, _neu = call("POST", "/api/eintraege", {"datum": "2026-09-30", "typ": "arbeit",
+                                          "von": "08:00", "bis": "12:00", "pause": 0})
+check("Eintrag zum Verwerfen angelegt", s, 201)
+s, r = call("GET", "/api/eintraege")
+check("ein Eintrag mehr", len(r), _anzahl + 1)
+s, r = call("POST", "/api/sicherungen/wiederherstellen", {"datei": _stand["datei"]})
+check("Stand zurueckgeholt", (s, r["eintraege"]), (200, _anzahl))
+s, r = call("GET", "/api/eintraege")
+check("Eintrag ist wieder weg", len(r), _anzahl)
+s, r = call("GET", "/api/sicherungen")
+check("Stand vor dem Zurueckholen gesichert",
+      any(x["grund"] == "vorimport" for x in r["sicherungen"]), True)
+# Eine Sicherung mit einer inzwischen entfernten Dienstart muss sich trotzdem
+# zurueckholen lassen - sonst waere der Stand verloren.
+s, r = call("PUT", "/api/einstellungen", {"dienstarten": [{"name": "Nur einer", "pauschale": 60}]})
+check("Dienstarten ausgetauscht", s, 200)
+s, r = call("POST", "/api/sicherungen", {"grund": "manuell"})
+_mit_alter_art = r["sicherungen"][0]["datei"]
+s, r = call("POST", "/api/sicherungen/wiederherstellen", {"datei": _mit_alter_art})
+check("Sicherung mit entfernter Dienstart zurueckholbar", s, 200)
+
+s, r = call("POST", "/api/sicherungen/wiederherstellen", {"datei": "../../app.py"})
+check("Fremde Datei abgelehnt", s, 400)
+s, r = call("POST", "/api/sicherungen/wiederherstellen", {"datei": "sicherung-20200101-000000000-manuell.json"})
+check("Unbekannte Sicherung abgelehnt", s, 400)
 
 print("\nStatische Dateien")
 s, html = call("GET", "/")
