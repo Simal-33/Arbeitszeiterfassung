@@ -21,17 +21,31 @@ import webbrowser
 from datetime import date, datetime, timedelta, timezone
 
 try:
-    from zoneinfo import ZoneInfo          # ab Python 3.9
+    from zoneinfo import ZoneInfo, available_timezones   # ab Python 3.9
 except ImportError:                        # pragma: no cover
     ZoneInfo = None
+    available_timezones = lambda: set()
+
+# Windows liefert Python keine Zeitzonendatenbank mit - dort kennt zoneinfo
+# ohne das Zusatzpaket 'tzdata' keine einzige Zone. Ohne Datenbank wird die
+# Zeitzone nur noch entgegengenommen statt geprueft: die Sommerzeitkorrektur
+# faellt dann ohnehin still auf 0 zurueck, aber Einstellungen und Import
+# duerfen daran nicht scheitern.
+ZONEN_BEKANNT = bool(available_timezones())
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 ENTRY_TYPES = ("arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst", "ausfahrt")
-# Typen, die den Soll-Wert des Tages automatisch gutschreiben:
-CREDIT_TYPES = ("urlaub", "krank", "feiertag", "gleitzeit")
+# Anzeigenamen. Die Kennung 'gleitzeit' bleibt, damit bestehende Daten weiter
+# lesbar sind - nach aussen heisst sie ueberall "Zeitausgleich".
+TYP_NAMEN = {"arbeit": "Arbeit", "urlaub": "Urlaub", "krank": "Krank",
+             "feiertag": "Feiertag", "gleitzeit": "Zeitausgleich",
+             "dienst": "Dienst", "ausfahrt": "Ausfahrt"}
+# Typen, die den Soll-Wert des Tages automatisch gutschreiben. Zeitausgleich
+# gehoert bewusst nicht dazu: so ein Tag soll ja gerade Plusstunden abbauen.
+CREDIT_TYPES = ("urlaub", "krank", "feiertag")
 # Typen, die gesondert verrechnet werden und nie in Ist, Saldo oder
 # Ueberstunden einfliessen:
 SEPARATE_TYPES = ("dienst", "ausfahrt")
@@ -476,7 +490,7 @@ class Store:
             current["dienstarten"] = arten
         if "zeitzone" in patch:
             zone = str(patch["zeitzone"] or "").strip() or "Europe/Vienna"
-            if ZoneInfo is not None:
+            if ZoneInfo is not None and ZONEN_BEKANNT:
                 try:
                     ZoneInfo(zone)
                 except Exception:
@@ -599,16 +613,11 @@ class Store:
             )
 
     def first_entry_date(self, job=None):
-        """Erster Tag mit Arbeitszeit. Vorab eingetragene Feiertage oder Urlaube
-        verschieben den Beginn der Saldorechnung damit nicht nach hinten."""
+        """Erster erfasster Tag, unabhaengig von der Art des Eintrags."""
         with self.lock, self._connect() as con:
-            wo = " AND job = ?" if job else ""
+            wo = " WHERE job = ?" if job else ""
             p = (job,) if job else ()
-            row = con.execute(
-                "SELECT MIN(datum) AS d FROM entries WHERE typ = 'arbeit'" + wo, p).fetchone()
-            if not (row and row["d"]):
-                row = con.execute(
-                    "SELECT MIN(datum) AS d FROM entries WHERE 1=1" + wo, p).fetchone()
+            row = con.execute("SELECT MIN(datum) AS d FROM entries" + wo, p).fetchone()
         return row["d"] if row and row["d"] else None
 
 
@@ -689,7 +698,7 @@ def clean_entry(raw, dienstarten=None):
                 raise ValueError(
                     "Unbekannte Dienstart '%s'. Erst in den Einstellungen anlegen." % dienstart)
             if gutschrift is None:
-                gutschrift = int(dienstarten[dienstart].get("pauschale") or 0)
+                gutschrift = tagesanteil(dienstarten[dienstart], datum)
         if gutschrift is None:
             gutschrift = 0
     else:
@@ -830,6 +839,24 @@ def dienst_tage(art, datum):
     return tage
 
 
+def tagesanteil(art, datum):
+    """Minuten, die ein einzelner Diensttag beitraegt.
+
+    Bei einer Dienstart mit Wochenrhythmus ist das der Anteil, der auf genau
+    dieses Datum faellt - beim 1. Dienst also 17:00 h am ersten Montag und
+    24:00 h an den Tagen dazwischen. Liegt das Datum ausserhalb des Rhythmus,
+    zaehlt der laengste Tag der Dienstart. Frueher stand hier das Feld
+    'pauschale', das bei Diensten mit Rhythmus 0 ist - ein von Hand angelegter
+    Diensttag wurde damit stillschweigend mit 0:00 gebucht.
+    """
+    if not art.get("modus"):
+        return int(art.get("pauschale") or 0)
+    plan = dict(dienst_tage(art, datum))
+    if plan.get(datum):
+        return plan[datum]
+    return max(plan.values()) if plan else int(art.get("pauschale") or 0)
+
+
 def dienst_pauschale(art):
     """Gesamte Zeitpauschale einer Dienstart in Minuten."""
     # Das Ergebnis haengt nur an der Definition, das Bezugsdatum ist beliebig.
@@ -848,6 +875,32 @@ def mit_dauer(settings):
         for a in (settings.get("dienstarten") or [])
     ]
     return kopie
+
+
+def abgebaute_zeit(eintrag, soll_map):
+    """Wie viel Zeit ein Zeitausgleichstag abbaut - nur fuer die Anzeige.
+
+    Ohne eigene Angabe ist das die Sollzeit des Wochentags. Steht am Eintrag eine
+    ausdrueckliche Gutschrift (z. B. abgebuchte Stunden aus dem Import), zaehlt
+    deren Betrag.
+    """
+    if eintrag.get("gutschrift") is not None:
+        return abs(int(eintrag["gutschrift"]))
+    wd = date.fromisoformat(eintrag["datum"]).isoweekday()
+    return int(round(soll_map.get(wd, 0.0) * 60))
+
+
+def saldo_beginn(daten):
+    """Beginn der Saldorechnung: der Monatserste des ersten erfassten Tages.
+
+    Frueher zaehlte der erste Tag mit *Arbeitszeit*. Urlaub oder Krankenstand
+    davor fielen damit aus dem Saldo und aus den Zaehlern der Uebersicht - ein
+    Urlaubstag am Monatsanfang war schlicht nicht da. Der Monatserste nimmt den
+    ganzen Anfangsmonat mit.
+    """
+    if not daten:
+        return "9999-12-31"
+    return min(daten)[:8] + "01"
 
 
 def daterange(start, end):
@@ -896,6 +949,16 @@ def compute(entries, settings, von, bis):
             # Ausfahrten waehrend eines Dienstes ebenso.
             minuten = arbeitsminuten(e)
             tag["ausfahrt"] += minuten
+        elif e["typ"] == "gleitzeit":
+            # Zeitausgleich baut Plusstunden ab: kein Ausgleich des Tagessolls,
+            # der Tag geht also mit seinem Soll ins Minus. Nur eine ausdrueckliche
+            # Gutschrift zaehlt - damit bleiben abgebuchte Stunden aus dem Import
+            # (negative Gutschrift) weiterhin richtig.
+            gut = int(e["gutschrift"]) if e.get("gutschrift") is not None else 0
+            tag["gutschrift"] += gut
+            # Angezeigt wird, wie viel Zeit der Tag abbaut - sonst stuende in der
+            # Liste eine 0:00, obwohl der Saldo um das Tagessoll faellt.
+            minuten = abgebaute_zeit(e, soll_map)
         elif e.get("gutschrift") is not None:
             # Explizite Gutschrift, z. B. halber Tag am 24.12.
             minuten = int(e["gutschrift"])
@@ -1371,10 +1434,8 @@ def auswertung(store, von, bis, job=None):
     for kennung in kennungen:
         sicht = job_sicht(settings, kennung)
         if not sicht.get("startdatum"):
-            arbeitstage = [e["datum"] for e in eigene_alle(store, kennung, standard_job)
-                           if e["typ"] == "arbeit"] or \
-                          [e["datum"] for e in eigene_alle(store, kennung, standard_job)]
-            sicht["startdatum"] = min(arbeitstage) if arbeitstage else "9999-12-31"
+            sicht["startdatum"] = saldo_beginn(
+                [e["datum"] for e in eigene_alle(store, kennung, standard_job)])
         eigene = [e for e in im_zeitraum if job_von(e, standard_job) == kennung]
         ergebnis = compute(eigene, sicht, von, bis)
         # Der Urlaubsanspruch gilt fuers Jahr - dafuer braucht es alle Urlaubstage
@@ -1467,12 +1528,11 @@ def effective_settings(store, job=None):
         settings = job_sicht(settings, job)
     if not settings.get("startdatum") and job:
         alle = store.get_settings()["jobs"]
-        eigene = eigene_alle(store, job, alle[0]["id"])
-        arbeit = [e["datum"] for e in eigene if e["typ"] == "arbeit"] or \
-                 [e["datum"] for e in eigene]
-        settings["startdatum"] = min(arbeit) if arbeit else "9999-12-31"
+        settings["startdatum"] = saldo_beginn(
+            [e["datum"] for e in eigene_alle(store, job, alle[0]["id"])])
     elif not settings.get("startdatum"):
-        settings["startdatum"] = store.first_entry_date() or "9999-12-31"
+        erster = store.first_entry_date()
+        settings["startdatum"] = saldo_beginn([erster] if erster else [])
     return settings
 
 
@@ -1550,6 +1610,8 @@ def export_csv(store, von=None, bis=None, job=None):
         elif e["typ"] == "ausfahrt":
             minuten = runde_minuten(
                 duration_minutes(e["von"], e["bis"], e["pause"], e["datum"], zone), schritt, modus)
+        elif e["typ"] == "gleitzeit":
+            minuten = abgebaute_zeit(e, soll_map)
         elif e.get("gutschrift") is not None:
             minuten = int(e["gutschrift"])
         elif e["von"] and e["bis"]:
@@ -1559,13 +1621,15 @@ def export_csv(store, von=None, bis=None, job=None):
         soll = soll_je_job.get(job_von(e, standard_job), soll_map).get(d.isoweekday(), 0.0)
         w.writerow([
             e["datum"], wtage[d.isoweekday() - 1],
-            namen_jobs.get(job_von(e, standard_job), ""), e["typ"].capitalize(),
+            namen_jobs.get(job_von(e, standard_job), ""),
+            TYP_NAMEN.get(e["typ"], e["typ"].capitalize()),
             dienstnamen.get(e.get("dienstart") or "", "")
             or (dienst_am_tag.get(e["datum"], "") if e["typ"] == "ausfahrt" else ""),
             e["von"], e["bis"], e["pause"],
             ("%.2f" % (minuten / 60)).replace(".", ","),
             ("%.2f" % soll).replace(".", ",") if e["datum"] not in gesehen else "",
-            "gesondert" if e["typ"] in SEPARATE_TYPES else "Arbeitszeit",
+            "gesondert" if e["typ"] in SEPARATE_TYPES
+            else ("Abbau" if e["typ"] == "gleitzeit" else "Arbeitszeit"),
             e["projekt"], e["notiz"],
         ])
         gesehen.add(e["datum"])

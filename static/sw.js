@@ -1,6 +1,6 @@
 /* Service Worker: haelt die App offline verfuegbar.
    Bei jeder Aenderung VERSION erhoehen, damit der Cache erneuert wird. */
-const VERSION = "zeiterfassung-v9";
+const VERSION = "zeiterfassung-v10";
 const DATEIEN = ["./", "index.html", "lokal.js", "manifest.webmanifest",
                  "icon.svg", "icon-192.png", "icon-512.png", "icon-180.png"];
 

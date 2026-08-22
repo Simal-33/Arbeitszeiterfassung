@@ -8,7 +8,8 @@ import urllib.request
 # Adresse des laufenden Servers; abweichender Port per Umgebungsvariable:
 #   ZEIT_URL=http://127.0.0.1:9000 python3 test_api.py
 BASE = os.environ.get("ZEIT_URL", "http://127.0.0.1:8765")
-ok, fail = 0, 0
+import app as _app
+ok, fail, uebersprungen = 0, 0, 0
 
 
 def call(method, path, body=None):
@@ -157,7 +158,6 @@ s, r = call("POST", "/api/import", {"modus": "ersetzen", "daten": {"quatsch": 1}
 check("Import ohne Eintraege -> 400", s, 400)
 
 print("\nFeiertage Oesterreich (Berechnung)")
-import app as _app
 _soll_2026 = {
     "2026-01-01": "Neujahr", "2026-01-06": "Heilige Drei Koenige",
     "2026-04-06": "Ostermontag", "2026-05-01": "Staatsfeiertag",
@@ -465,18 +465,27 @@ check("Rechenregeln gespeichert", (r["zeitzone"], r["rundung"], r["jobs"][0]["ur
       ("Europe/Vienna", 15, 25.0))
 s, r = call("PUT", "/api/einstellungen", {"rundung": 7})
 check("krumme Rundung -> 400", s, 400)
-s, r = call("PUT", "/api/einstellungen", {"zeitzone": "Mond/Krater"})
-check("unbekannte Zeitzone -> 400", s, 400)
+# Ohne Zeitzonendatenbank - Windows ohne das Paket 'tzdata' - kennt Python keine
+# einzige Zone. Die Zeitzone wird dann nur entgegengenommen und die
+# Sommerzeitkorrektur faellt auf 0 zurueck; diese drei Pruefungen haetten dort
+# keine Grundlage und werden uebersprungen statt zu scheitern.
+if _app.ZONEN_BEKANNT:
+    s, r = call("PUT", "/api/einstellungen", {"zeitzone": "Mond/Krater"})
+    check("unbekannte Zeitzone -> 400", s, 400)
 
-s, r = call("POST", "/api/eintraege", {"datum": "2027-03-27", "typ": "arbeit",
-                                       "von": "22:00", "bis": "06:00", "pause": 0})
-check("Nacht vor der Umstellung angelegt", s, 201)
-s, a = call("GET", "/api/auswertung?von=2027-03-27&bis=2027-03-27")
-check("Sommerzeit: 8 Wanduhrstunden sind 7 echte", a["ist"], 420)
-s, r = call("POST", "/api/eintraege", {"datum": "2027-10-30", "typ": "arbeit",
-                                       "von": "22:00", "bis": "06:00", "pause": 0})
-s, a = call("GET", "/api/auswertung?von=2027-10-30&bis=2027-10-30")
-check("Winterzeit: 8 Wanduhrstunden sind 9 echte", a["ist"], 540)
+    s, r = call("POST", "/api/eintraege", {"datum": "2027-03-27", "typ": "arbeit",
+                                           "von": "22:00", "bis": "06:00", "pause": 0})
+    check("Nacht vor der Umstellung angelegt", s, 201)
+    s, a = call("GET", "/api/auswertung?von=2027-03-27&bis=2027-03-27")
+    check("Sommerzeit: 8 Wanduhrstunden sind 7 echte", a["ist"], 420)
+    s, r = call("POST", "/api/eintraege", {"datum": "2027-10-30", "typ": "arbeit",
+                                           "von": "22:00", "bis": "06:00", "pause": 0})
+    s, a = call("GET", "/api/auswertung?von=2027-10-30&bis=2027-10-30")
+    check("Winterzeit: 8 Wanduhrstunden sind 9 echte", a["ist"], 540)
+else:
+    uebersprungen += 4
+    print("  ---  Sommerzeit uebersprungen: keine Zeitzonendatenbank vorhanden.")
+    print("       Unter Windows behebt das:  pip install tzdata")
 s, r = call("POST", "/api/eintraege", {"datum": "2027-09-06", "typ": "arbeit",
                                        "von": "07:00", "bis": "16:07", "pause": 45})
 s, a = call("GET", "/api/auswertung?von=2027-09-06&bis=2027-09-06")
@@ -571,7 +580,13 @@ check("Eintrag um neue Spalten ergaenzt",
       (_e["gutschrift"], _e["dienstart"], _e["job"]), (None, "", ""))
 _a = _app.compute(_st.list_entries(), _app.effective_settings(_st), "2026-08-03", "2026-08-03")
 check("Migration rechnet richtig", (_a["ist"], _a["soll"]), (495, 495))
-_os.remove(_pfad)
+# Windows gibt eine noch geoeffnete Datei nicht frei - der Aufraeumschritt darf
+# den restlichen Lauf nicht abbrechen.
+del _st
+try:
+    _os.remove(_pfad)
+except OSError:
+    pass
 
 print("\nNotdienst mit Wochenrhythmus")
 # 1. Dienst laeuft Montag 07:00 bis Montag 07:00 durchgehend, der 2. und der
@@ -661,7 +676,10 @@ check("Sicherungsliste erreichbar", s, 200)
 _vorher = len(r["sicherungen"])
 s, r = call("POST", "/api/sicherungen", {"grund": "manuell"})
 check("Kopie angelegt", (s, r["angelegt"]), (200, True))
-check("Kopie in der Liste", len(r["sicherungen"]), _vorher + 1)
+# Die Liste ist auf SICHERUNG_MAX begrenzt: ist sie voll, faellt die
+# aelteste heraus und die Zahl bleibt gleich.
+check("Kopie in der Liste", len(r["sicherungen"]),
+      min(_vorher + 1, _app.SICHERUNG_MAX))
 _stand = r["sicherungen"][0]
 check("Kopie hat Zeitpunkt", bool(__import__("re").match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$",
                                                         _stand["zeit"])), True)
@@ -702,5 +720,64 @@ check("Index enthaelt Titel", "<title>Zeiterfassung</title>" in html, True)
 s, r = call("GET", "/../app.py")
 check("Pfad-Traversal blockiert", s, 404)
 
-print("\n%d ok, %d Fehler" % (ok, fail))
+
+print("\nZeitausgleich baut Stunden ab")
+# Sauberer Stand: eine Woche mit je einer Stunde Mehrarbeit ergibt +5 h.
+call("POST", "/api/import", {"modus": "ersetzen", "daten": {"eintraege": []}})
+call("PUT", "/api/einstellungen", {"jobs": [{"id": "standard", "name": "Job", "urlaubstage": 25,
+     "soll": {"1": 8, "2": 8, "3": 8, "4": 8, "5": 8, "6": 0, "7": 0},
+     "startdatum": "2026-03-02"}]})
+for _d in ("2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"):
+    call("POST", "/api/eintraege", {"datum": _d, "typ": "arbeit",
+                                    "von": "08:00", "bis": "17:30", "pause": 30})
+s, a = call("GET", "/api/auswertung?von=2026-03-02&bis=2026-03-06")
+check("Woche mit je 1 h Mehrarbeit", a["saldo"], 300)
+call("POST", "/api/eintraege", {"datum": "2026-03-09", "typ": "gleitzeit"})
+s, a = call("GET", "/api/auswertung?von=2026-03-02&bis=2026-03-09")
+check("Zeitausgleichstag verbraucht das Tagessoll", a["saldo"], 300 - 480)
+_t = {t["datum"]: t for t in a["tage"]}["2026-03-09"]
+check("Zeitausgleich ohne Gutschrift", _t["gutschrift"], 0)
+check("Zeitausgleich geht ins Minus", _t["saldo"], -480)
+check("Zeitausgleich zaehlt als Tag", a["arten"]["gleitzeit"]["tage"], 1)
+# Eine ausdrueckliche Gutschrift zaehlt weiter - dafuer gibt es den Import
+call("POST", "/api/eintraege", {"datum": "2026-03-10", "typ": "gleitzeit", "gutschrift": -90})
+s, a = call("GET", "/api/auswertung?von=2026-03-10&bis=2026-03-10")
+check("ausdrueckliche Abbuchung bleibt", a["gutschrift"], -90)
+
+print("\nSaldo beginnt am Monatsersten")
+call("POST", "/api/import", {"modus": "ersetzen", "daten": {"eintraege": []}})
+call("PUT", "/api/einstellungen", {"jobs": [{"id": "standard", "name": "Job", "urlaubstage": 25,
+     "soll": {"1": 8.25, "2": 8.25, "3": 8.25, "4": 8.25, "5": 5.5, "6": 0, "7": 0},
+     "startdatum": ""}]})
+# Urlaub am Montag, erster Arbeitstag erst am Dienstag
+call("POST", "/api/eintraege", {"datum": "2026-08-03", "typ": "urlaub"})
+call("POST", "/api/eintraege", {"datum": "2026-08-04", "typ": "arbeit",
+                                "von": "07:00", "bis": "20:15", "pause": 0})
+call("POST", "/api/eintraege", {"datum": "2026-08-19", "typ": "urlaub"})
+call("POST", "/api/eintraege", {"datum": "2026-08-20", "typ": "urlaub"})
+s, a = call("GET", "/api/auswertung?von=2026-08-01&bis=2026-08-31")
+check("Urlaub vor dem ersten Arbeitstag zaehlt", a["arten"]["urlaub"]["tage"], 3)
+check("und bringt seine Gutschrift", a["arten"]["urlaub"]["minuten"], 3 * 495)
+check("Gutschriften gesamt", a["gutschrift"], 3 * 495)
+check("Urlaubskonto stimmt mit der Uebersicht ueberein", a["urlaub"]["verbraucht"], 3.0)
+
+print("\nDiensttag von Hand")
+# Ein frueherer Abschnitt hat die Dienstarten ersetzt - hier die eigenen anlegen.
+call("PUT", "/api/einstellungen", {"dienstarten": [
+    {"name": "1. Dienst", "modus": "durchgehend",
+     "starttag": 1, "startzeit": "07:00", "endtag": 1, "endzeit": "07:00"},
+    {"name": "2. Dienst", "modus": "taeglich",
+     "starttag": 1, "startzeit": "07:00", "endtag": 6, "endzeit": "20:00"}]})
+s, r = call("POST", "/api/eintraege", {"datum": "2026-08-14", "typ": "dienst",
+                                       "dienstart": "2-dienst"})
+check("bekommt den Tagesanteil statt 0", r["gutschrift"], 780)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-08-17", "typ": "dienst",
+                                       "dienstart": "1-dienst"})
+check("1. Dienst am Starttag: ab 07:00", r["gutschrift"], 17 * 60)
+s, r = call("POST", "/api/eintraege", {"datum": "2026-08-18", "typ": "dienst",
+                                       "dienstart": "1-dienst"})
+check("1. Dienst an einem Tag dazwischen: voll", r["gutschrift"], 24 * 60)
+
+print("\n%d ok, %d Fehler%s" % (ok, fail,
+      ", %d uebersprungen" % uebersprungen if uebersprungen else ""))
 raise SystemExit(1 if fail else 0)

@@ -14,6 +14,10 @@ const SICHERUNG_MAX = 10;   // so viele Staende werden aufbewahrt
 const ENTRY_TYPES = ["arbeit", "urlaub", "krank", "feiertag", "gleitzeit", "dienst", "ausfahrt"];
 // Gesondert verrechnet - nie in Ist, Saldo oder Überstunden:
 const SEPARATE_TYPES = ["dienst", "ausfahrt"];
+// Anzeigenamen. Die Kennung "gleitzeit" bleibt, damit bestehende Daten
+// weiter lesbar sind - nach aussen heisst sie ueberall "Zeitausgleich".
+const TYP_NAMEN = {arbeit:"Arbeit", urlaub:"Urlaub", krank:"Krank", feiertag:"Feiertag",
+                   gleitzeit:"Zeitausgleich", dienst:"Dienst", ausfahrt:"Ausfahrt"};
 const DIENST_MODI = ["durchgehend", "taeglich"];
 const SONDERTAGE_MODI = ["keine", "halb", "ganz"];
 const WOCHENTAGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
@@ -494,6 +498,34 @@ function dienstTage(art, datum){
   return tage;
 }
 
+// Wie viel Zeit ein Zeitausgleichstag abbaut - nur für die Anzeige. Ohne eigene
+// Angabe die Sollzeit des Wochentags, sonst der Betrag der Gutschrift.
+function abgebauteZeit(eintrag, sollMap){
+  if (eintrag.gutschrift != null) return Math.abs(Math.trunc(eintrag.gutschrift));
+  return Math.round((sollMap[isoWochentag(eintrag.datum)] || 0) * 60);
+}
+
+// Beginn der Saldorechnung: der Monatserste des ersten erfassten Tages.
+// Früher zählte der erste Tag mit Arbeitszeit - Urlaub oder Krankenstand davor
+// fielen damit aus dem Saldo und aus den Zählern der Übersicht.
+function saldoBeginn(daten){
+  if (!daten || !daten.length) return "9999-12-31";
+  return daten.slice().sort()[0].slice(0, 8) + "01";
+}
+
+// Minuten, die ein einzelner Diensttag beiträgt. Bei einer Dienstart mit
+// Wochenrhythmus der Anteil genau dieses Datums; liegt es außerhalb, der
+// längste Tag der Dienstart. Früher stand hier das Feld "pauschale", das bei
+// Diensten mit Rhythmus 0 ist - ein von Hand angelegter Diensttag wurde damit
+// stillschweigend mit 0:00 gebucht.
+function tagesanteil(art, datum){
+  if (!art.modus) return Math.trunc(Number(art.pauschale) || 0);
+  const plan = Object.fromEntries(dienstTage(art, datum));
+  if (plan[datum]) return plan[datum];
+  const werte = Object.values(plan);
+  return werte.length ? Math.max(...werte) : Math.trunc(Number(art.pauschale) || 0);
+}
+
 // Gesamte Zeitpauschale einer Dienstart in Minuten. Das Ergebnis hängt nur an
 // der Definition, das Bezugsdatum ist beliebig.
 function dienstPauschale(art){
@@ -535,7 +567,7 @@ function pruefeEintrag(roh, dienstarten){
       if (!dienstart) throw new Fehler("Bitte eine Dienstart wählen.");
       if (!dienstarten[dienstart])
         throw new Fehler(`Unbekannte Dienstart '${dienstart}'. Erst in den Einstellungen anlegen.`);
-      if (gutschrift === null) gutschrift = Number(dienstarten[dienstart].pauschale) || 0;
+      if (gutschrift === null) gutschrift = tagesanteil(dienstarten[dienstart], datum);
     }
     if (gutschrift === null) gutschrift = 0;
   } else dienstart = "";
@@ -617,6 +649,13 @@ function berechne(entries, settings, von, bis){
       minuten = Math.trunc(e.gutschrift || 0); t.pauschale += minuten;
     } else if (e.typ === "ausfahrt"){
       minuten = arbeitsminuten(e); t.ausfahrt += minuten;
+    } else if (e.typ === "gleitzeit"){
+      // Zeitausgleich baut Plusstunden ab: kein Ausgleich des Tagessolls. Nur
+      // eine ausdrückliche Gutschrift zählt (abgebuchte Stunden aus dem Import).
+      t.gutschrift += e.gutschrift != null ? Math.trunc(e.gutschrift) : 0;
+      // Angezeigt wird, wie viel Zeit der Tag abbaut - sonst stünde in der Liste
+      // eine 0:00, obwohl der Saldo um das Tagessoll fällt.
+      minuten = abgebauteZeit(e, sollMap);
     } else if (e.gutschrift != null){
       minuten = Math.trunc(e.gutschrift); t.gutschrift += minuten;
     } else if (e.von && e.bis){
@@ -756,9 +795,7 @@ async function gesamtsaldo(job){
   const entries = job ? alle.filter(e => jobVon(e, standardJob) === job) : alle;
   const startsaldo = Math.round(Number(sicht.startsaldo || 0) * 60);
   if (!entries.length) return startsaldo;
-  const arbeit = entries.filter(e => e.typ === "arbeit");
-  const ersterTag = (arbeit.length ? arbeit : entries)[0].datum;
-  const s = {...sicht, startdatum: sicht.startdatum || ersterTag};
+  const s = {...sicht, startdatum: sicht.startdatum || saldoBeginn(entries.map(e => e.datum))};
   const von = [s.startdatum, entries[0].datum].sort()[0];
   const bis = [entries[entries.length-1].datum, heuteIso()].sort().pop();
   return berechne(entries, s, von, bis).saldo + startsaldo;
@@ -768,8 +805,7 @@ async function wirksameEinstellungen(){
   const settings = await getSettings();
   if (!settings.startdatum){
     const entries = await alleEintraege();
-    const arbeit = entries.filter(e => e.typ === "arbeit");
-    settings.startdatum = (arbeit[0] || entries[0])?.datum || "9999-12-31";
+    settings.startdatum = saldoBeginn(entries.map(e => e.datum));
   }
   return settings;
 }
@@ -865,10 +901,8 @@ async function auswertung(von, bis, job){
   const teile = kennungen.map(kennung => {
     const sicht = jobSicht(settings, kennung);
     if (!sicht.startdatum){
-      const eigene = gesamt.filter(e => jobVon(e, standardJob) === kennung);
-      const arbeit = eigene.filter(e => e.typ === "arbeit");
-      const quelle = arbeit.length ? arbeit : eigene;
-      sicht.startdatum = quelle.length ? quelle.map(e => e.datum).sort()[0] : "9999-12-31";
+      sicht.startdatum = saldoBeginn(gesamt.filter(e => jobVon(e, standardJob) === kennung)
+                                           .map(e => e.datum));
     }
     const eigene = imZeitraum.filter(e => jobVon(e, standardJob) === kennung);
     const ergebnis = berechne(eigene, sicht, von, bis);
@@ -1112,18 +1146,21 @@ function csvExport(entries, settings, jobs = [], job = null){
     else if (e.typ === "dienst") minuten = Math.trunc(e.gutschrift || 0);
     else if (e.typ === "ausfahrt")
       minuten = rundeMinuten(dauerMinuten(e.von, e.bis, e.pause, e.datum, zone), schritt, modus);
+    else if (e.typ === "gleitzeit")
+      minuten = abgebauteZeit(e, {[wd]: Number(settings.soll[String(wd)] || 0)});
     else if (e.gutschrift != null) minuten = Math.trunc(e.gutschrift);
     else if (e.von && e.bis) minuten = dauerMinuten(e.von, e.bis, e.pause, e.datum, zone);
     else minuten = Math.round(Number(settings.soll[String(wd)] || 0) * 60);
     const soll = (sollJeJob[jobVon(e, standardJob)] || {})[wd]
       ?? Number(settings.soll[String(wd)] || 0);
     zeilen.push([e.datum, wtage[wd-1], namenJobs[jobVon(e, standardJob)] || "",
-      e.typ.charAt(0).toUpperCase() + e.typ.slice(1),
+      TYP_NAMEN[e.typ] || (e.typ.charAt(0).toUpperCase() + e.typ.slice(1)),
       namen[e.dienstart] || (e.typ === "ausfahrt" ? (dienstAmTag[e.datum] || "") : ""),
       e.von, e.bis, e.pause,
       (minuten/60).toFixed(2).replace(".", ","),
       gesehen.has(e.datum) ? "" : soll.toFixed(2).replace(".", ","),
-      SEPARATE_TYPES.includes(e.typ) ? "gesondert" : "Arbeitszeit",
+      SEPARATE_TYPES.includes(e.typ) ? "gesondert"
+        : (e.typ === "gleitzeit" ? "Abbau" : "Arbeitszeit"),
       e.projekt, e.notiz]);
     gesehen.add(e.datum);
   }

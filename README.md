@@ -231,6 +231,12 @@ Wochentage ohne Sollzeit, Wochentage ohne hinterlegte Standardzeit und alles nac
 Wanduhr. Eine Nachtschicht 22:00–06:00 ergibt in der Nacht der Umstellung im März sieben,
 im Oktober neun Stunden. Die Zeitzone dafür steht in den Einstellungen.
 
+> Dafür braucht Python eine Zeitzonendatenbank. macOS und Linux bringen sie mit, **Windows
+> nicht** – dort liefert `pip install tzdata` sie nach. Fehlt sie, rechnet die App weiter
+> mit der Wanduhr (an den beiden Umstellungstagen also um eine Stunde daneben) und der
+> Testlauf überspringt die drei Sommerzeit-Prüfungen. Am Handy tritt das nicht auf, dort
+> kommt die Zeitzone vom Browser.
+
 **Rundung.** Optional wird die Arbeitszeit jedes Eintrags auf 5, 10, 15 oder 30 Minuten
 gerundet – zur nächsten Stufe, immer auf oder immer ab. Standard ist minutengenau.
 
@@ -256,13 +262,19 @@ Dateien, iCloud, Drive oder Mail – statt sie in den Download-Ordner zu legen.
 - **Soll** = Summe der Sollstunden aller Tage im Zeitraum. Tage in der Zukunft zählen nur mit,
   wenn dort bereits etwas erfasst ist – vorab eingetragene Feiertage oder geplante Urlaube
   drücken den Saldo also nicht ins Minus, und der laufende Monat auch nicht.
-- Ohne gesetztes **Startdatum** beginnt die Saldorechnung mit dem ersten Tag, an dem
-  Arbeitszeit erfasst wurde. Tage davor bleiben sichtbar, zählen aber nicht mit.
+- Ohne gesetztes **Startdatum** beginnt die Saldorechnung am **Monatsersten** des ersten
+  erfassten Tages. Damit zählt der ganze Anfangsmonat mit – auch ein Urlaubs- oder
+  Krankentag, der vor dem ersten Arbeitstag liegt. Tage davor bleiben sichtbar, zählen
+  aber nicht mit.
 - Die **Gutschrift** eines Eintrags darf auch negativ sein. So lassen sich ausbezahlte oder
   abgebuchte Stunden erfassen, ohne die geleistete Arbeitszeit zu verfälschen.
-- **Urlaub, Krank, Feiertag, Gleitzeittag** werden automatisch mit den Sollstunden des Tages
+- **Urlaub, Krank und Feiertag** werden automatisch mit den Sollstunden des Tages
   gutgeschrieben – der Saldo bleibt an diesen Tagen neutral. Trägst du bei diesen Arten trotzdem
   eine Zeitspanne ein, zählt genau diese (praktisch für halbe Urlaubstage).
+- **Zeitausgleich** wird bewusst *nicht* gutgeschrieben: so ein Tag baut ja gerade
+  Plusstunden ab. Der Saldo fällt deshalb um die Sollzeit des Tages. In der Liste steht
+  die abgebaute Zeit, damit der Tag nicht mit 0:00 dasteht. Eine ausdrückliche Gutschrift
+  am Eintrag hat weiterhin Vorrang – so bleiben abgebuchte Stunden aus dem Import richtig.
 - **Saldo** = Ist + Gutschrift − Soll. **Gesamtüberstunden** = Saldo über den kompletten
   Erfassungszeitraum plus Startsaldo.
 

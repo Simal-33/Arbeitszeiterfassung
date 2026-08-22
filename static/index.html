@@ -245,7 +245,7 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
           <option value="urlaub">Urlaub</option>
           <option value="krank">Krank</option>
           <option value="feiertag">Feiertag</option>
-          <option value="gleitzeit">Gleitzeittag</option>
+          <option value="gleitzeit">Zeitausgleich</option>
           <option value="dienst">Dienst / Rufbereitschaft</option>
           <option value="ausfahrt">Ausfahrt im Dienst</option>
         </select></div>
@@ -442,10 +442,12 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
         <button type="button" class="right" onclick="speichereEinstellungen()">Jetzt speichern</button>
       </div>
       <p class="hint" style="margin-top:14px">
-        Urlaub, Krankheit, Feiertag und Gleitzeittage werden automatisch mit den Sollstunden
-        des jeweiligen Wochentags gutgeschrieben – der Saldo bleibt an diesen Tagen also neutral.
-        Wird bei diesen Arten trotzdem eine Zeitspanne eingetragen, z&auml;hlt genau diese
-        (praktisch f&uuml;r halbe Urlaubstage).
+        Urlaub, Krankheit und Feiertage werden automatisch mit den Sollstunden des jeweiligen
+        Wochentags gutgeschrieben – der Saldo bleibt an diesen Tagen also neutral. Wird bei
+        diesen Arten trotzdem eine Zeitspanne eingetragen, z&auml;hlt genau diese (praktisch
+        f&uuml;r halbe Urlaubstage).
+        <br><strong>Zeitausgleich</strong> wird nicht gutgeschrieben: so ein Tag baut ja gerade
+        Plusstunden ab und geht deshalb mit seiner Sollzeit ins Minus.
       </p>
     </div>
   </div>
@@ -479,6 +481,10 @@ details summary{cursor:pointer;font-weight:600;font-size:15px}
 const WT = ["Mo","Di","Mi","Do","Fr","Sa","So"];
 // Arten, die gesondert verrechnet werden und nicht in den Saldo zählen
 const GESONDERT = ["dienst", "ausfahrt"];
+// Anzeigenamen der Arten. Die Kennung "gleitzeit" bleibt wegen der
+// bestehenden Daten, nach außen heißt sie überall "Zeitausgleich".
+const TYP_NAMEN = {arbeit:"Arbeit", urlaub:"Urlaub", krank:"Krank", feiertag:"Feiertag",
+                   gleitzeit:"Zeitausgleich", dienst:"Dienst", ausfahrt:"Ausfahrt"};
 const WT_LANG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
 const MONATE = ["Januar","Februar","März","April","Mai","Juni",
                 "Juli","August","September","Oktober","November","Dezember"];
@@ -660,7 +666,7 @@ function renderTabelle(a){
 
 function artName(e){
   if (e.typ === "ausfahrt") return "Ausfahrt";
-  if (e.typ !== "dienst") return e.typ.charAt(0).toUpperCase() + e.typ.slice(1);
+  if (e.typ !== "dienst") return TYP_NAMEN[e.typ] || e.typ;
   const art = (settings?.dienstarten || []).find(a => a.id === e.dienstart);
   return art ? art.name : "Dienst";
 }
@@ -1152,12 +1158,32 @@ function fuelleDienstAuswahl(){
   dienstVorschau();
 }
 
+// Spiegelt tagesanteil() aus app.py und lokal.js: der Anteil der Zeitpauschale,
+// der auf genau dieses Datum fällt. Nur für die Vorbelegung im Formular – wird
+// das Feld leer gelassen, rechnet ohnehin die jeweilige Fassung selbst.
+function tagesanteilUI(art, datum){
+  if (!art.modus) return Number(art.pauschale) || 0;
+  const min = z => Number(String(z).slice(0,2)) * 60 + Number(String(z).slice(3,5));
+  const beginn = min(art.startzeit || "00:00"), ende = min(art.endzeit || "00:00");
+  if (art.modus === "taeglich"){
+    let laenge = ende - beginn;
+    if (laenge <= 0) laenge += 24 * 60;
+    return laenge;                       // täglich: jeder Tag dasselbe Fenster
+  }
+  // durchgehend: erster Tag ab der Startzeit, letzter bis zur Endzeit
+  const wd = ((new Date(datum + "T00:00:00").getDay() + 6) % 7) + 1;
+  if (wd === Number(art.starttag)) return 24 * 60 - beginn;
+  if (wd === Number(art.endtag)) return ende;
+  return 24 * 60;
+}
+
 function dienstWechsel(){
   const art = (settings?.dienstarten || []).find(a => a.id === document.getElementById("f-dienstart").value);
   if (art && !document.getElementById("f-id").value){
-    // Einzelner Diensttag: bei festem Rhythmus der übliche Anteil eines Tages.
-    document.getElementById("f-gutschrift").value = art.modus && art.tage
-      ? Math.round(art.dauer / art.tage) : art.pauschale;
+    // Einzelner Diensttag: der Anteil, der auf das gewählte Datum fällt.
+    const datum = document.getElementById("f-datum").value;
+    document.getElementById("f-gutschrift").value =
+      (art.modus && datum) ? tagesanteilUI(art, datum) : (art.pauschale || 0);
   }
 }
 
@@ -1274,6 +1300,8 @@ function datumHinweis(){
   el.textContent = v ? `${WT[(new Date(v + "T00:00:00").getDay() + 6) % 7]}, ${deDatum(v)}` : "";
   el.title = v ? wochentag(v) : "";
   vorbelegen();
+  // Beim Dienst hängt die Pauschale am Wochentag - mit dem Datum neu rechnen.
+  if (document.getElementById("f-typ").value === "dienst") dienstWechsel();
 }
 
 // Neue Eintraege mit den Standardzeiten des Wochentags vorbelegen.
