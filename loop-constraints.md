@@ -35,4 +35,13 @@
 - Niemals `*.db` anfassen (Produktiv- und Testdatenbanken), niemals committen
 - Niemals `__pycache__/` committen
 - Tests sind Python: `python test_api.py` etc. — kein `npm test`
-- Server-Start für Tests: `python app.py --port 8765 --db ci.db --no-browser`
+- **Niemals `test_api.py` ohne gesetztes `ZEIT_URL` starten.** Der Test macht
+  `POST /api/import` mit `modus: "ersetzen"` und überschreibt alle Einträge des
+  Servers, den er erreicht. Default-Ziel ist Port 8765 = Default-Port der echten App.
+- Vor jedem Testlauf: freien Port wählen, eigene Wegwerf-DB, danach beenden und löschen.
+  `python app.py --port 8791 --db /tmp/test.db --no-browser` +
+  `ZEIT_URL=http://127.0.0.1:8791 python test_api.py`
+- Vor dem Testlauf prüfen, ob der Zielport frei ist. Belegt = abbrechen, nicht ausweichen.
+- Baseline ist 258 ok / 0 Fehler. Weniger als 258 ok = etwas übersprungen, nicht grün.
+- Lokal fehlt `tzdata` → 4 Sommerzeit-Tests werden still übersprungen. Lokal grün
+  ist kein Beweis für CI-grün.

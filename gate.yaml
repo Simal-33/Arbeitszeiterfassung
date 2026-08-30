@@ -1,0 +1,32 @@
+# Maschinenlesbares Gegenstueck zu docs/safety.md und loop-constraints.md.
+# Wird von loop-gate geprueft: exit 0 = weiter, exit 2 = an Menschen eskalieren.
+# Bei Aenderung hier auch loop-constraints.md nachziehen.
+version: 1
+
+denylist:
+  # Datenbanken - enthalten echte Arbeitszeiten
+  - "**/*.db"
+  - "**/*.db-journal"
+  # Exporte mit echten Daten
+  - "zeiterfassung-*.json"
+  - "zeiterfassung-*.csv"
+  # CI-Definition zu aendern ist eine Menschenentscheidung.
+  # Beide Verzeichnisse: .github/workflows/ ist aktiv, workflows/ ist inaktives Duplikat.
+  - ".github/workflows/**"
+  - "workflows/**"
+  - "**/.github/workflows/**"
+  # Standard-Geheimnisse
+  - "**/.env"
+  - "**/.env.*"
+  - "**/secrets/**"
+  - "**/credentials/**"
+  - "**/*_key*"
+  - "**/*_secret*"
+
+# Kleines Projekt, minimal-fix soll klein bleiben.
+# Mehr als 5 Dateien in einem Loop-Fix = eskalieren.
+maxFiles: 5
+
+# Bewusst LEER: kein Auto-Merge, nichts geht ohne menschliche Pruefung nach main.
+# Erst wenn eine Weile nachweislich gute Fixes kamen, hier vorsichtig oeffnen.
+autoMergeAllowlist: []
