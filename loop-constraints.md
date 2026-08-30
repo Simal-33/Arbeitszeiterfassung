@@ -31,6 +31,18 @@
 ---
 <!-- Add your own rules below. Use plain English. The loop reads this verbatim. -->
 
+## Gedaechtnis (bindend)
+- Zu Beginn JEDES Laufs lesen: `loop-cursor.json`, `loop-decisions.md`, `loop-critique.md`, `STATE.md`
+- Nur betrachten, was **neuer** ist als `last_commit_sha` / `last_ci_run_id` aus `loop-cursor.json`.
+  Kein pauschales "letzte 24h" — das verliert oder wiederholt Befunde.
+- Ein Befund, dessen `id` in `loop-decisions.md` auf `erledigt` oder `ignorieren` steht,
+  wird NICHT erneut gemeldet, auch wenn die Ursache im Repo noch sichtbar ist.
+- Ein Befund, der in `loop-cursor.json` schon als `offen` steht, wird in STATE.md
+  uebernommen, aber nicht als neu ausgegeben.
+- Am Ende jedes Laufs: `loop-cursor.json` fortschreiben (Wasserzeichen + Befundliste)
+  und einen Absatz an `loop-critique.md` anhaengen. `loop-critique.md` wird nie gekuerzt.
+- `loop-decisions.md` schreiben ausschliesslich Menschen. Der Loop liest sie nur.
+
 ## Projektspezifisch — Arbeitszeiterfassung
 - Niemals `*.db` anfassen (Produktiv- und Testdatenbanken), niemals committen
 - Niemals `__pycache__/` committen

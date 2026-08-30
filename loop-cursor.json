@@ -1,0 +1,36 @@
+{
+  "_hinweis": "Wasserzeichen des Loops. Der Loop schreibt diese Datei am Ende jedes Laufs. Nicht von Hand pflegen, ausser man will ihn bewusst zuruecksetzen.",
+  "last_run": null,
+  "last_commit_sha": "9211a0095726f7b96ec625698830c57153495165",
+  "last_ci_run_id": null,
+  "known_findings": [
+    {
+      "id": "workflows-duplikat-release",
+      "titel": "workflows/release.yml (inaktiv) ist neuer als .github/workflows/release.yml",
+      "erstmals_gesehen": "2026-08-30",
+      "status": "offen",
+      "stufe": "high"
+    },
+    {
+      "id": "workflows-duplikat-pages-ci",
+      "titel": "workflows/pages.yml laeuft nie, workflows/ci.yml ist Duplikat",
+      "erstmals_gesehen": "2026-08-30",
+      "status": "offen",
+      "stufe": "watch"
+    },
+    {
+      "id": "ci-testluecke",
+      "titel": "5 von 6 Testdateien laufen nicht in CI",
+      "erstmals_gesehen": "2026-08-30",
+      "status": "offen",
+      "stufe": "watch"
+    },
+    {
+      "id": "tzdata-lokal-fehlt",
+      "titel": "Lokal fehlt tzdata, 4 Sommerzeit-Tests werden uebersprungen",
+      "erstmals_gesehen": "2026-08-30",
+      "status": "offen",
+      "stufe": "watch"
+    }
+  ]
+}
