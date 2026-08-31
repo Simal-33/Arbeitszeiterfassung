@@ -1,6 +1,6 @@
 {
   "_hinweis": "Wasserzeichen des Loops. Der Loop schreibt diese Datei am Ende jedes Laufs. Nicht von Hand pflegen, ausser man will ihn bewusst zuruecksetzen.",
-  "last_run": "2026-08-30T17:30:24Z",
+  "last_run": "2026-08-31T05:10:24Z",
   "last_commit_sha": "0322d4b509b9af51f0e69892fe0f796cde407db6",
   "last_ci_run_id": 33325327244,
   "known_findings": [

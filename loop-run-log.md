@@ -58,3 +58,16 @@ Append one entry per run. Prune entries older than 30 days.
   "outcome": "no-op"
 }
 ```
+
+```json
+{
+  "run_id": "2026-08-31T05:10:24Z",
+  "pattern": "daily-triage",
+  "duration_s": 120,
+  "items_found": 0,
+  "actions_taken": 0,
+  "escalations": 1,
+  "tokens_estimate": 30000,
+  "outcome": "report-only"
+}
+```
